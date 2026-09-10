@@ -39,13 +39,14 @@ CREATE INDEX IF NOT EXISTS calls_state_created_at_idx ON calls (state, created_a
 @Injectable()
 export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   private readonly pool: Pool;
+  private schemaReady: Promise<void> | null = null;
 
   constructor(config: AppConfig) {
     this.pool = new Pool({ connectionString: config.databaseUrl });
   }
 
   async onModuleInit(): Promise<void> {
-    await this.pool.query(schemaSql);
+    await this.ensureSchema();
   }
 
   async onModuleDestroy(): Promise<void> {
@@ -53,7 +54,13 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   }
 
   async query<TRow extends QueryResultRow>(text: string, values: unknown[] = []): Promise<TRow[]> {
+    await this.ensureSchema();
     const result = await this.pool.query<TRow>(text, values);
     return result.rows;
+  }
+
+  private ensureSchema(): Promise<void> {
+    this.schemaReady ??= this.pool.query(schemaSql).then(() => undefined);
+    return this.schemaReady;
   }
 }
