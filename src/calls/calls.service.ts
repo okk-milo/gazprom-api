@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { AppConfig } from '../config/app-config';
 import { StorageService } from '../storage/storage.service';
@@ -24,6 +24,20 @@ export class CallsService {
 
   async createEmployee(name?: string): Promise<Employee> {
     return this.repository.createEmployee(name);
+  }
+
+  async deleteEmployee(employeeId: string): Promise<void> {
+    const result = await this.repository.deleteEmployee(employeeId);
+
+    if (result === 'not_found') {
+      throw new NotFoundException('Сотрудник не найден');
+    }
+
+    if (result === 'in_use') {
+      throw new ConflictException(
+        'Нельзя удалить сотрудника, пока с ним связаны сделки или звонки.',
+      );
+    }
   }
 
   async listDeals(): Promise<Deal[]> {

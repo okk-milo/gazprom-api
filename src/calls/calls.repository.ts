@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { type QueryResultRow } from 'pg';
 import { DatabaseService } from '../database/database.service';
@@ -38,9 +38,13 @@ interface CallRow extends QueryResultRow {
   updated_at: Date;
 }
 
+interface DatabaseClient {
+  query<TRow extends QueryResultRow>(text: string, values?: unknown[]): Promise<TRow[]>;
+}
+
 @Injectable()
 export class CallsRepository {
-  constructor(private readonly database: DatabaseService) {}
+  constructor(@Inject(DatabaseService) private readonly database: DatabaseClient) {}
 
   async ensureDemoData(): Promise<void> {
     const employees = await this.database.query<EmployeeRow>(
@@ -79,6 +83,28 @@ export class CallsRepository {
       employee.name,
     ]);
     return employee;
+  }
+
+  async deleteEmployee(employeeId: string): Promise<'deleted' | 'not_found' | 'in_use'> {
+    const deleted = await this.database.query<EmployeeRow>(
+      `DELETE FROM employees
+       WHERE id = $1
+         AND NOT EXISTS (SELECT 1 FROM deals WHERE employee_id = $1)
+         AND NOT EXISTS (SELECT 1 FROM calls WHERE employee_id = $1)
+       RETURNING id, name`,
+      [employeeId],
+    );
+
+    if (deleted[0]) {
+      return 'deleted';
+    }
+
+    const existing = await this.database.query<Pick<EmployeeRow, 'id'>>(
+      'SELECT id FROM employees WHERE id = $1',
+      [employeeId],
+    );
+
+    return existing[0] ? 'in_use' : 'not_found';
   }
 
   async listDeals(): Promise<Deal[]> {

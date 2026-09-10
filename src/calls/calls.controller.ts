@@ -1,5 +1,23 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
-import { ApiBody, ApiCreatedResponse, ApiOkResponse, ApiTags } from '@nestjs/swagger';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  ParseUUIDPipe,
+  Post,
+} from '@nestjs/common';
+import {
+  ApiBody,
+  ApiConflictResponse,
+  ApiCreatedResponse,
+  ApiNoContentResponse,
+  ApiNotFoundResponse,
+  ApiOkResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 import { IsOptional, IsString, IsUUID, MaxLength, MinLength } from 'class-validator';
 import { CallsService } from './calls.service';
 
@@ -52,6 +70,15 @@ export class CallsController {
   @ApiCreatedResponse({ description: 'Сотрудник создан' })
   createEmployee(@Body() body: CreateEmployeeDto) {
     return this.callsService.createEmployee(body.name);
+  }
+
+  @Delete('employees/:employeeId')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiNoContentResponse({ description: 'Сотрудник удалён' })
+  @ApiNotFoundResponse({ description: 'Сотрудник не найден' })
+  @ApiConflictResponse({ description: 'У сотрудника есть связанные сделки или звонки' })
+  deleteEmployee(@Param('employeeId', new ParseUUIDPipe()) employeeId: string): Promise<void> {
+    return this.callsService.deleteEmployee(employeeId);
   }
 
   @Get('deals')
