@@ -14,4 +14,5 @@ container.
 
 `ASR_TRANSCRIPTION_RETRY_ATTEMPTS` and `ASR_TRANSCRIPTION_RETRY_DELAY_MS`
 bound retries for the ASR service's transient `503` busy response. The defaults
-add at most two seconds to a call before it is reported as failed.
+add at most 295 seconds to a call before it is reported as failed. This covers
+the bounded model warm-up window after an interruptible ASR VM restarts.

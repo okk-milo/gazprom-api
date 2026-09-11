@@ -45,8 +45,8 @@ export class AppConfig {
   readonly llmInternalToken = process.env.LLM_INTERNAL_TOKEN?.trim();
   readonly mockProcessingEnabled = process.env.MOCK_PROCESSING_ENABLED === 'true';
   readonly processingPollIntervalMs = positiveInteger('PROCESSING_POLL_INTERVAL_MS', 1000);
-  readonly asrTranscriptionRetryAttempts = positiveInteger('ASR_TRANSCRIPTION_RETRY_ATTEMPTS', 3);
-  readonly asrTranscriptionRetryDelayMs = positiveInteger('ASR_TRANSCRIPTION_RETRY_DELAY_MS', 1000);
+  readonly asrTranscriptionRetryAttempts = positiveInteger('ASR_TRANSCRIPTION_RETRY_ATTEMPTS', 60);
+  readonly asrTranscriptionRetryDelayMs = positiveInteger('ASR_TRANSCRIPTION_RETRY_DELAY_MS', 5000);
 
   get storageConfigured(): boolean {
     return Boolean(
