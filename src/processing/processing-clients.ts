@@ -43,16 +43,7 @@ export class ProcessingClients {
       throw new Error('ASR_INTERNAL_URL is not configured');
     }
 
-    const response = await fetch(this.config.asrInternalUrl, {
-      method: 'POST',
-      headers: this.internalHeaders(this.config.asrInternalToken),
-      body: JSON.stringify({ source_url: sourceUrl, profile: 'fast' }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`ASR request failed with HTTP ${response.status}`);
-    }
-
+    const response = await this.requestAsr(sourceUrl);
     const payload = this.readAsrResponse(await response.json());
     return payload.segments.map((segment) => ({
       id: randomUUID(),
@@ -98,6 +89,38 @@ export class ProcessingClients {
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     };
+  }
+
+  private async requestAsr(sourceUrl: string): Promise<Response> {
+    if (!this.config.asrInternalUrl) {
+      throw new Error('ASR_INTERNAL_URL is not configured');
+    }
+
+    for (let attempt = 1; attempt <= this.config.asrTranscriptionRetryAttempts; attempt += 1) {
+      const response = await fetch(this.config.asrInternalUrl, {
+        method: 'POST',
+        headers: this.internalHeaders(this.config.asrInternalToken),
+        body: JSON.stringify({ source_url: sourceUrl, profile: 'fast' }),
+      });
+
+      if (response.ok) {
+        return response;
+      }
+
+      if (response.status !== 503 || attempt === this.config.asrTranscriptionRetryAttempts) {
+        throw new Error(`ASR request failed with HTTP ${response.status}`);
+      }
+
+      await this.wait(this.config.asrTranscriptionRetryDelayMs);
+    }
+
+    throw new Error('ASR request could not be completed');
+  }
+
+  private async wait(delayMs: number): Promise<void> {
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, delayMs);
+    });
   }
 
   private readAsrResponse(value: unknown): AsrResponse {

@@ -11,3 +11,7 @@ The initial demo uses `MOCK_PROCESSING_ENABLED=true` until the separately tested
 ASR and LLM task branches are reachable through `ASR_INTERNAL_URL` and
 `LLM_INTERNAL_URL`. Neither internal service is exposed by the public Nginx
 container.
+
+`ASR_TRANSCRIPTION_RETRY_ATTEMPTS` and `ASR_TRANSCRIPTION_RETRY_DELAY_MS`
+bound retries for the ASR service's transient `503` busy response. The defaults
+add at most two seconds to a call before it is reported as failed.
