@@ -179,6 +179,17 @@ export class CallsRepository {
     );
   }
 
+  async completeWithoutSpeech(
+    callId: string,
+    transcript: TranscriptSegment[],
+  ): Promise<CallSnapshot | null> {
+    return this.updateSnapshot(
+      callId,
+      `state = 'no_speech', progress = 100, transcript = $1::jsonb, analysis = NULL, error_message = NULL, revision = revision + 1, updated_at = now()`,
+      [JSON.stringify(transcript)],
+    );
+  }
+
   async fail(callId: string, error: string): Promise<CallSnapshot | null> {
     return this.updateSnapshot(
       callId,

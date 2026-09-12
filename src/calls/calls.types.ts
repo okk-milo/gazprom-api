@@ -1,5 +1,11 @@
 export type CallState =
-  'upload_pending' | 'uploaded' | 'transcribing' | 'analysing' | 'completed' | 'failed';
+  | 'upload_pending'
+  | 'uploaded'
+  | 'transcribing'
+  | 'analysing'
+  | 'completed'
+  | 'no_speech'
+  | 'failed';
 
 export interface TranscriptSegment {
   id: string;

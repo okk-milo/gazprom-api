@@ -43,6 +43,12 @@ export class ProcessingWorker implements OnModuleInit {
         ? 'mock://audio'
         : await this.callsService.getDownloadUrl(call.id);
       const transcript = await this.clients.transcribe(sourceUrl);
+
+      if (transcript.length === 0) {
+        await this.repository.completeWithoutSpeech(call.id, transcript);
+        return;
+      }
+
       const analysis = await this.clients.assess(transcript);
       await this.repository.saveTranscript(call.id, transcript);
       await this.repository.complete(call.id, analysis);

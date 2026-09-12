@@ -45,3 +45,20 @@ describe('CallsRepository.deleteEmployee', () => {
     await expect(repository.deleteEmployee(employeeId)).resolves.toBe('not_found');
   });
 });
+
+describe('CallsRepository.completeWithoutSpeech', () => {
+  it('stores the empty transcript as a terminal result without an assessment', async () => {
+    const database = new TestDatabase();
+    const repository = new CallsRepository(database);
+
+    await repository.completeWithoutSpeech('e722e2b8-9a64-4cf5-a59f-bd9f7a0a7a2c', []);
+
+    expect(database.calls).toEqual([
+      expect.objectContaining({
+        values: ['[]', 'e722e2b8-9a64-4cf5-a59f-bd9f7a0a7a2c'],
+        text: expect.stringContaining("state = 'no_speech'"),
+      }),
+    ]);
+    expect(database.calls[0]?.text).toContain('analysis = NULL');
+  });
+});
