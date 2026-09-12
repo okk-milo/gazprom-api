@@ -36,6 +36,10 @@ services:
       - api
     ports:
       - '80:80'
+      - '443:443'
+    volumes:
+      - /opt/gazprom/certbot-webroot:/var/www/certbot:ro
+      - /opt/gazprom/letsencrypt:/etc/letsencrypt:ro
 
 volumes:
   postgres-data:
