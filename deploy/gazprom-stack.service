@@ -1,0 +1,16 @@
+[Unit]
+Description=Gazprom antifraud demonstration stack
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/gazprom/gazprom-api
+ExecStart=/usr/bin/docker compose --env-file /opt/gazprom/gazprom-api/.env -f /opt/gazprom/gazprom-api/deploy/compose.yml up -d
+ExecStop=/usr/bin/docker compose --env-file /opt/gazprom/gazprom-api/.env -f /opt/gazprom/gazprom-api/deploy/compose.yml stop
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target
