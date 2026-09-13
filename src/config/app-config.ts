@@ -47,6 +47,8 @@ export class AppConfig {
   readonly processingPollIntervalMs = positiveInteger('PROCESSING_POLL_INTERVAL_MS', 1000);
   readonly asrTranscriptionRetryAttempts = positiveInteger('ASR_TRANSCRIPTION_RETRY_ATTEMPTS', 60);
   readonly asrTranscriptionRetryDelayMs = positiveInteger('ASR_TRANSCRIPTION_RETRY_DELAY_MS', 5000);
+  readonly llmAssessmentRetryAttempts = positiveInteger('LLM_ASSESSMENT_RETRY_ATTEMPTS', 60);
+  readonly llmAssessmentRetryDelayMs = positiveInteger('LLM_ASSESSMENT_RETRY_DELAY_MS', 5000);
 
   get storageConfigured(): boolean {
     return Boolean(

@@ -62,4 +62,47 @@ describe('ProcessingClients', () => {
     delete process.env.ASR_TRANSCRIPTION_RETRY_ATTEMPTS;
     delete process.env.ASR_TRANSCRIPTION_RETRY_DELAY_MS;
   });
+
+  it('retries a transient busy LLM response', async () => {
+    process.env.MOCK_PROCESSING_ENABLED = 'false';
+    process.env.LLM_INTERNAL_URL = 'http://llm.test/internal/v1/antifraud/assessments';
+    process.env.LLM_ASSESSMENT_RETRY_ATTEMPTS = '2';
+    process.env.LLM_ASSESSMENT_RETRY_DELAY_MS = '1';
+
+    const fetchMock = jest
+      .spyOn(global, 'fetch')
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            score: 65,
+            factors_for: [],
+            factors_against: [],
+            model_version: 'qwen-test',
+          }),
+          { status: 200 },
+        ),
+      );
+
+    const clients = new ProcessingClients(new AppConfig());
+    const analysis = await clients.assess([
+      {
+        id: 'a3c4b325-2688-4375-887a-e2749a5d0db1',
+        startMs: 0,
+        endMs: 2000,
+        speaker: 'Клиент',
+        text: 'Проверочная фраза',
+        highlightRanges: [],
+      },
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(analysis).toMatchObject({ score: 65, modelVersion: 'qwen-test' });
+
+    jest.restoreAllMocks();
+    process.env.MOCK_PROCESSING_ENABLED = 'true';
+    delete process.env.LLM_INTERNAL_URL;
+    delete process.env.LLM_ASSESSMENT_RETRY_ATTEMPTS;
+    delete process.env.LLM_ASSESSMENT_RETRY_DELAY_MS;
+  });
 });

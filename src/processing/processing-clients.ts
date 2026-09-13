@@ -64,22 +64,7 @@ export class ProcessingClients {
       throw new Error('LLM_INTERNAL_URL is not configured');
     }
 
-    const response = await fetch(this.config.llmInternalUrl, {
-      method: 'POST',
-      headers: this.internalHeaders(this.config.llmInternalToken),
-      body: JSON.stringify({
-        transcript: transcript.map((segment) => ({
-          start_ms: segment.startMs,
-          end_ms: segment.endMs,
-          speaker: segment.speaker,
-          text: segment.text,
-        })),
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`LLM request failed with HTTP ${response.status}`);
-    }
+    const response = await this.requestLlm(transcript);
 
     return this.toAnalysis(this.readLlmResponse(await response.json()), transcript);
   }
@@ -115,6 +100,41 @@ export class ProcessingClients {
     }
 
     throw new Error('ASR request could not be completed');
+  }
+
+  private async requestLlm(transcript: TranscriptSegment[]): Promise<Response> {
+    if (!this.config.llmInternalUrl) {
+      throw new Error('LLM_INTERNAL_URL is not configured');
+    }
+
+    const body = JSON.stringify({
+      transcript: transcript.map((segment) => ({
+        start_ms: segment.startMs,
+        end_ms: segment.endMs,
+        speaker: segment.speaker,
+        text: segment.text,
+      })),
+    });
+
+    for (let attempt = 1; attempt <= this.config.llmAssessmentRetryAttempts; attempt += 1) {
+      const response = await fetch(this.config.llmInternalUrl, {
+        method: 'POST',
+        headers: this.internalHeaders(this.config.llmInternalToken),
+        body,
+      });
+
+      if (response.ok) {
+        return response;
+      }
+
+      if (response.status !== 503 || attempt === this.config.llmAssessmentRetryAttempts) {
+        throw new Error(`LLM request failed with HTTP ${response.status}`);
+      }
+
+      await this.wait(this.config.llmAssessmentRetryDelayMs);
+    }
+
+    throw new Error('LLM request could not be completed');
   }
 
   private async wait(delayMs: number): Promise<void> {
