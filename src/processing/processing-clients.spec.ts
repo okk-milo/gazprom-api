@@ -86,6 +86,7 @@ describe('ProcessingClients', () => {
               { speaker: 'SPEAKER_00', role: 'operator' },
               { speaker: 'SPEAKER_01', role: 'client' },
             ],
+            segment_roles: [{ segment_index: 2, role: 'client' }],
             model_version: 'qwen-test',
           }),
           { status: 200 },
@@ -110,13 +111,21 @@ describe('ProcessingClients', () => {
         text: 'Мне сказали действовать срочно.',
         highlightRanges: [],
       },
+      {
+        id: '92df024a-6e15-4d65-8b8d-bef8ba204dd6',
+        startMs: 4000,
+        endMs: 6000,
+        speaker: 'Неизвестный',
+        text: 'Я перевожу деньги за ремонт квартиры.',
+        highlightRanges: [],
+      },
     ];
     const analysis = await clients.assess(transcript);
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(analysis).toMatchObject({ score: 65, modelVersion: 'qwen-test' });
     expect(analysis.timeline.map((point) => point.score)).toEqual([34, 65]);
-    expect(transcript.map((segment) => segment.speaker)).toEqual(['Оператор', 'Клиент']);
+    expect(transcript.map((segment) => segment.speaker)).toEqual(['Оператор', 'Клиент', 'Клиент']);
 
     jest.restoreAllMocks();
     process.env.MOCK_PROCESSING_ENABLED = 'true';

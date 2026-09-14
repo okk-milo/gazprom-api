@@ -33,12 +33,18 @@ interface LlmSpeakerRole {
   role: 'client' | 'operator' | 'unknown';
 }
 
+interface LlmSegmentRole {
+  segment_index: number;
+  role: 'client' | 'operator' | 'unknown';
+}
+
 interface LlmResponse {
   score: number;
   factors_for: LlmFactor[];
   factors_against: LlmFactor[];
   timeline: LlmTimelinePoint[];
   speaker_roles: LlmSpeakerRole[];
+  segment_roles: LlmSegmentRole[];
   model_version: string;
 }
 
@@ -188,6 +194,7 @@ export class ProcessingClients {
       factors_against: this.readFactors(record.factors_against, 'factors_against'),
       timeline: this.readTimeline(record.timeline),
       speaker_roles: this.readSpeakerRoles(record.speaker_roles),
+      segment_roles: this.readSegmentRoles(record.segment_roles),
       model_version: this.readString(record.model_version, 'Invalid LLM model version'),
     };
   }
@@ -209,7 +216,7 @@ export class ProcessingClients {
   }
 
   private toAnalysis(response: LlmResponse, transcript: TranscriptSegment[]): AntifraudAnalysis {
-    this.applySpeakerRoles(transcript, response.speaker_roles);
+    this.applySpeakerRoles(transcript, response.speaker_roles, response.segment_roles);
     this.applyHighlights(transcript, response.factors_for, 'risk');
     this.applyHighlights(transcript, response.factors_against, 'counter');
 
@@ -258,6 +265,27 @@ export class ProcessingClients {
       }
 
       return [{ speaker: this.readString(role.speaker, 'Invalid LLM speaker id'), role: value }];
+    });
+  }
+
+  private readSegmentRoles(value: unknown): LlmSegmentRole[] {
+    if (value === undefined) {
+      return [];
+    }
+
+    if (!Array.isArray(value)) {
+      throw new Error('LLM response segment_roles must be an array');
+    }
+
+    return value.map((item) => {
+      const role = this.readRecord(item, 'Invalid LLM segment role');
+      const value = this.readString(role.role, 'Invalid LLM segment role value');
+
+      if (value !== 'client' && value !== 'operator' && value !== 'unknown') {
+        throw new Error('Invalid LLM segment role value');
+      }
+
+      return { segment_index: this.readIndex(role.segment_index), role: value };
     });
   }
 
@@ -348,12 +376,19 @@ export class ProcessingClients {
     return Math.round(Math.max(0, Math.min(100, value)));
   }
 
-  private applySpeakerRoles(transcript: TranscriptSegment[], speakerRoles: LlmSpeakerRole[]): void {
+  private applySpeakerRoles(
+    transcript: TranscriptSegment[],
+    speakerRoles: LlmSpeakerRole[],
+    segmentRoles: LlmSegmentRole[],
+  ): void {
     const roleBySpeaker = new Map(speakerRoles.map((role) => [role.speaker, role.role]));
+    const roleBySegment = new Map(segmentRoles.map((role) => [role.segment_index, role.role]));
     const aliases = new Map<string, string>();
 
-    for (const segment of transcript) {
-      const role = roleBySpeaker.get(segment.speaker);
+    for (const [index, segment] of transcript.entries()) {
+      const role =
+        roleBySpeaker.get(segment.speaker) ??
+        (segment.speaker === 'Неизвестный' ? roleBySegment.get(index) : undefined);
 
       if (role === 'client') {
         segment.speaker = 'Клиент';
