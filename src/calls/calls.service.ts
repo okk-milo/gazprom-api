@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { AppConfig } from '../config/app-config';
 import { StorageService } from '../storage/storage.service';
 import { CallsRepository } from './calls.repository';
-import { type CallSnapshot, type Deal, type Employee } from './calls.types';
+import { type CallHistoryItem, type CallSnapshot, type Deal, type Employee } from './calls.types';
 
 @Injectable()
 export class CallsService {
@@ -90,6 +90,10 @@ export class CallsService {
     }
 
     return call;
+  }
+
+  async listCallHistory(): Promise<CallHistoryItem[]> {
+    return this.repository.listCallHistory();
   }
 
   async getDownloadUrl(callId: string): Promise<string> {

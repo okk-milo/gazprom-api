@@ -4,6 +4,7 @@ import { type QueryResultRow } from 'pg';
 import { DatabaseService } from '../database/database.service';
 import {
   type AntifraudAnalysis,
+  type CallHistoryItem,
   type CallSnapshot,
   type CallState,
   type Deal,
@@ -36,6 +37,17 @@ interface CallRow extends QueryResultRow {
   error_message: string | null;
   created_at: Date;
   updated_at: Date;
+}
+
+interface CallHistoryRow extends QueryResultRow {
+  id: string;
+  file_name: string;
+  state: CallState;
+  progress: number;
+  score: number | null;
+  deal_title: string;
+  employee_name: string;
+  created_at: Date;
 }
 
 interface DatabaseClient {
@@ -201,6 +213,35 @@ export class CallsRepository {
   async getCall(callId: string): Promise<CallSnapshot | null> {
     const rows = await this.database.query<CallRow>('SELECT * FROM calls WHERE id = $1', [callId]);
     return rows[0] ? this.toSnapshot(rows[0]) : null;
+  }
+
+  async listCallHistory(): Promise<CallHistoryItem[]> {
+    const rows = await this.database.query<CallHistoryRow>(
+      `SELECT calls.id,
+              calls.file_name,
+              calls.state,
+              calls.progress,
+              (calls.analysis ->> 'score')::double precision AS score,
+              deals.title AS deal_title,
+              employees.name AS employee_name,
+              calls.created_at
+       FROM calls
+       JOIN deals ON deals.id = calls.deal_id
+       JOIN employees ON employees.id = calls.employee_id
+       ORDER BY calls.created_at DESC
+       LIMIT 50`,
+    );
+
+    return rows.map((row) => ({
+      id: row.id,
+      fileName: row.file_name,
+      state: row.state,
+      progress: row.progress,
+      score: row.score,
+      dealTitle: row.deal_title,
+      employeeName: row.employee_name,
+      createdAt: row.created_at.toISOString(),
+    }));
   }
 
   async getSourceKey(callId: string): Promise<string | null> {

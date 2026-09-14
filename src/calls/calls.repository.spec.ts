@@ -62,3 +62,40 @@ describe('CallsRepository.completeWithoutSpeech', () => {
     expect(database.calls[0]?.text).toContain('analysis = NULL');
   });
 });
+
+describe('CallsRepository.listCallHistory', () => {
+  it('returns lightweight call history ordered by newest upload', async () => {
+    const database = new TestDatabase();
+    const createdAt = new Date('2026-09-14T00:19:45.670Z');
+    database.responses = [
+      [
+        {
+          id: 'e64dcded-5c04-4ece-be22-845e8e906ae7',
+          file_name: 'call.mp3',
+          state: 'completed',
+          progress: 100,
+          score: 72,
+          deal_title: 'Демонстрационная сделка',
+          employee_name: 'Сотрудник 1',
+          created_at: createdAt,
+        },
+      ],
+    ];
+    const repository = new CallsRepository(database);
+
+    await expect(repository.listCallHistory()).resolves.toEqual([
+      {
+        id: 'e64dcded-5c04-4ece-be22-845e8e906ae7',
+        fileName: 'call.mp3',
+        state: 'completed',
+        progress: 100,
+        score: 72,
+        dealTitle: 'Демонстрационная сделка',
+        employeeName: 'Сотрудник 1',
+        createdAt: createdAt.toISOString(),
+      },
+    ]);
+    expect(database.calls[0]?.text).toContain('JOIN deals');
+    expect(database.calls[0]?.text).toContain('LIMIT 50');
+  });
+});

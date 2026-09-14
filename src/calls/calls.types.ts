@@ -52,6 +52,17 @@ export interface CallSnapshot {
   updatedAt: string;
 }
 
+export interface CallHistoryItem {
+  id: string;
+  fileName: string;
+  state: CallState;
+  progress: number;
+  score: number | null;
+  dealTitle: string;
+  employeeName: string;
+  createdAt: string;
+}
+
 export interface Employee {
   id: string;
   name: string;

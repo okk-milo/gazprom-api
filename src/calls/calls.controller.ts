@@ -107,6 +107,12 @@ export class CallsController {
     return this.callsService.markUploaded(callId);
   }
 
+  @Get('calls')
+  @ApiOkResponse({ description: 'Последние проверки звонков' })
+  listCallHistory() {
+    return this.callsService.listCallHistory();
+  }
+
   @Get('calls/:callId')
   @ApiOkResponse({ description: 'Текущий снапшот анализа' })
   getCall(@Param('callId') callId: string) {
