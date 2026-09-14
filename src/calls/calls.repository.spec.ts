@@ -104,6 +104,50 @@ describe('CallsRepository.listCallHistory', () => {
   });
 });
 
+describe('CallsRepository.getCall acoustic labels', () => {
+  it.each([
+    {
+      label: 'source speaker',
+      metadata: { speakerId: 'SPEAKER_01' },
+      expected: { speakerId: 'SPEAKER_01' },
+    },
+    { label: 'legacy snapshot', metadata: {}, expected: {} },
+    { label: 'invalid optional label', metadata: { speakerId: 42 }, expected: {} },
+  ])('preserves business role and supports $label', async ({ metadata, expected }) => {
+    const database = new TestDatabase();
+    const segment = {
+      id: 'segment-1',
+      startMs: 0,
+      endMs: 1000,
+      speaker: 'Клиент',
+      text: 'Проверочный текст.',
+      highlightRanges: [],
+    };
+    database.responses = [
+      [
+        {
+          id: 'call-1',
+          deal_id: 'deal-1',
+          employee_id: 'employee-1',
+          file_name: 'call.wav',
+          state: 'completed',
+          revision: 1,
+          progress: 100,
+          transcript: [{ ...segment, ...metadata }],
+          analysis: null,
+          error_message: null,
+          created_at: new Date('2026-09-14T00:00:00Z'),
+          updated_at: new Date('2026-09-14T00:00:00Z'),
+        },
+      ],
+    ];
+
+    const snapshot = await new CallsRepository(database).getCall('call-1');
+
+    expect(snapshot?.transcript).toEqual([{ ...segment, ...expected }]);
+  });
+});
+
 describe('analysis progress', () => {
   it('persists a partial result and revised transcript below completion', async () => {
     const database = new TestDatabase();

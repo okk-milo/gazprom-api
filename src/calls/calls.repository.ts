@@ -336,6 +336,7 @@ export class CallsRepository {
       const startMs = this.readFiniteNumber(segment.startMs);
       const endMs = this.readFiniteNumber(segment.endMs);
       const speaker = this.readString(segment.speaker);
+      const speakerId = this.readString(segment.speakerId);
       const text = this.readString(segment.text);
       const highlightRanges = this.readHighlightRanges(segment.highlightRanges);
 
@@ -343,7 +344,9 @@ export class CallsRepository {
         return [];
       }
 
-      return [{ id, startMs, endMs, speaker, text, highlightRanges }];
+      return [
+        { id, startMs, endMs, speaker, ...(speakerId ? { speakerId } : {}), text, highlightRanges },
+      ];
     });
   }
 
