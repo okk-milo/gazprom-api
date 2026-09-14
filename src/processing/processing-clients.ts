@@ -23,10 +23,22 @@ interface LlmFactor {
   segment_index: number;
 }
 
+interface LlmTimelinePoint {
+  segment_index: number;
+  score: number;
+}
+
+interface LlmSpeakerRole {
+  speaker: string;
+  role: 'client' | 'operator' | 'unknown';
+}
+
 interface LlmResponse {
   score: number;
   factors_for: LlmFactor[];
   factors_against: LlmFactor[];
+  timeline: LlmTimelinePoint[];
+  speaker_roles: LlmSpeakerRole[];
   model_version: string;
 }
 
@@ -174,6 +186,8 @@ export class ProcessingClients {
       score: this.readScore(record.score),
       factors_for: this.readFactors(record.factors_for, 'factors_for'),
       factors_against: this.readFactors(record.factors_against, 'factors_against'),
+      timeline: this.readTimeline(record.timeline),
+      speaker_roles: this.readSpeakerRoles(record.speaker_roles),
       model_version: this.readString(record.model_version, 'Invalid LLM model version'),
     };
   }
@@ -195,6 +209,7 @@ export class ProcessingClients {
   }
 
   private toAnalysis(response: LlmResponse, transcript: TranscriptSegment[]): AntifraudAnalysis {
+    this.applySpeakerRoles(transcript, response.speaker_roles);
     this.applyHighlights(transcript, response.factors_for, 'risk');
     this.applyHighlights(transcript, response.factors_against, 'counter');
 
@@ -202,12 +217,158 @@ export class ProcessingClients {
       score: response.score,
       factorsFor: this.toFactors(response.factors_for, transcript),
       factorsAgainst: this.toFactors(response.factors_against, transcript),
-      timeline: transcript.map((segment) => ({
-        timestampMs: segment.endMs,
-        score: response.score,
-      })),
+      timeline: this.toTimeline(response, transcript),
       modelVersion: response.model_version,
     };
+  }
+
+  private readTimeline(value: unknown): LlmTimelinePoint[] {
+    if (value === undefined) {
+      return [];
+    }
+
+    if (!Array.isArray(value)) {
+      throw new Error('LLM response timeline must be an array');
+    }
+
+    return value.map((point) => {
+      const item = this.readRecord(point, 'Invalid LLM timeline point');
+      return {
+        segment_index: this.readIndex(item.segment_index),
+        score: this.readScore(item.score),
+      };
+    });
+  }
+
+  private readSpeakerRoles(value: unknown): LlmSpeakerRole[] {
+    if (value === undefined) {
+      return [];
+    }
+
+    if (!Array.isArray(value)) {
+      throw new Error('LLM response speaker_roles must be an array');
+    }
+
+    return value.flatMap((item) => {
+      const role = this.readRecord(item, 'Invalid LLM speaker role');
+      const value = this.readString(role.role, 'Invalid LLM speaker role value');
+
+      if (value !== 'client' && value !== 'operator' && value !== 'unknown') {
+        throw new Error('Invalid LLM speaker role value');
+      }
+
+      return [{ speaker: this.readString(role.speaker, 'Invalid LLM speaker id'), role: value }];
+    });
+  }
+
+  private toTimeline(
+    response: LlmResponse,
+    transcript: TranscriptSegment[],
+  ): AntifraudAnalysis['timeline'] {
+    const pointsByIndex = new Map<number, LlmTimelinePoint>();
+
+    for (const point of response.timeline) {
+      if (point.segment_index < transcript.length) {
+        pointsByIndex.set(point.segment_index, point);
+      }
+    }
+
+    const points = Array.from(pointsByIndex.values())
+      .sort((left, right) => left.segment_index - right.segment_index)
+      .map((point) => {
+        const segment = transcript[point.segment_index];
+        return segment ? { timestampMs: segment.endMs, score: point.score } : null;
+      })
+      .filter((point): point is AntifraudAnalysis['timeline'][number] => point !== null);
+
+    if (this.hasScoreVariation(points)) {
+      return points;
+    }
+
+    return this.toEvidenceTimeline(response, transcript);
+  }
+
+  private hasScoreVariation(points: AntifraudAnalysis['timeline']): boolean {
+    return new Set(points.map((point) => point.score)).size > 1;
+  }
+
+  private toEvidenceTimeline(
+    response: LlmResponse,
+    transcript: TranscriptSegment[],
+  ): AntifraudAnalysis['timeline'] {
+    const effects = new Array<number>(transcript.length).fill(0);
+
+    for (const factor of response.factors_for) {
+      const effect = effects[factor.segment_index];
+      if (effect !== undefined) {
+        effects[factor.segment_index] = effect + factor.confidence * 18;
+      }
+    }
+
+    for (const factor of response.factors_against) {
+      const effect = effects[factor.segment_index];
+      if (effect !== undefined) {
+        effects[factor.segment_index] = effect - factor.confidence * 18;
+      }
+    }
+
+    const totalEffect = effects.reduce((total, effect) => total + effect, 0);
+    let accumulatedEffect = 0;
+    const points: AntifraudAnalysis['timeline'] = [];
+
+    for (let index = 0; index < transcript.length; index += 1) {
+      const segment = transcript[index];
+      const effect = effects[index];
+
+      if (!segment || effect === undefined) {
+        continue;
+      }
+
+      accumulatedEffect += effect;
+      points.push({
+        timestampMs: segment.endMs,
+        score: this.clampScore(response.score - totalEffect + accumulatedEffect),
+      });
+    }
+
+    const lastPoint = points[points.length - 1];
+    if (lastPoint) {
+      lastPoint.score = response.score;
+    }
+
+    if (this.hasScoreVariation(points)) {
+      return points;
+    }
+
+    const lastSegment = transcript[transcript.length - 1];
+    return lastSegment ? [{ timestampMs: lastSegment.endMs, score: response.score }] : [];
+  }
+
+  private clampScore(value: number): number {
+    return Math.round(Math.max(0, Math.min(100, value)));
+  }
+
+  private applySpeakerRoles(transcript: TranscriptSegment[], speakerRoles: LlmSpeakerRole[]): void {
+    const roleBySpeaker = new Map(speakerRoles.map((role) => [role.speaker, role.role]));
+    const aliases = new Map<string, string>();
+
+    for (const segment of transcript) {
+      const role = roleBySpeaker.get(segment.speaker);
+
+      if (role === 'client') {
+        segment.speaker = 'Клиент';
+      } else if (role === 'operator') {
+        segment.speaker = 'Оператор';
+      } else if (segment.speaker !== 'Неизвестный' && !this.isDisplaySpeaker(segment.speaker)) {
+        const alias = aliases.get(segment.speaker) ?? `Собеседник ${aliases.size + 1}`;
+        aliases.set(segment.speaker, alias);
+        segment.speaker = alias;
+      }
+    }
+  }
+
+  private isDisplaySpeaker(value: string): boolean {
+    return value === 'Клиент' || value === 'Оператор' || value === 'Автоответчик';
   }
 
   private toFactors(factors: LlmFactor[], transcript: TranscriptSegment[]): AnalysisFactor[] {

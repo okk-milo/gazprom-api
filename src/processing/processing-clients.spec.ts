@@ -78,6 +78,14 @@ describe('ProcessingClients', () => {
             score: 65,
             factors_for: [],
             factors_against: [],
+            timeline: [
+              { segment_index: 0, score: 34 },
+              { segment_index: 1, score: 65 },
+            ],
+            speaker_roles: [
+              { speaker: 'SPEAKER_00', role: 'operator' },
+              { speaker: 'SPEAKER_01', role: 'client' },
+            ],
             model_version: 'qwen-test',
           }),
           { status: 200 },
@@ -85,19 +93,30 @@ describe('ProcessingClients', () => {
       );
 
     const clients = new ProcessingClients(new AppConfig());
-    const analysis = await clients.assess([
+    const transcript = [
       {
         id: 'a3c4b325-2688-4375-887a-e2749a5d0db1',
         startMs: 0,
         endMs: 2000,
-        speaker: 'Клиент',
-        text: 'Проверочная фраза',
+        speaker: 'SPEAKER_00',
+        text: 'Здравствуйте, расскажите о переводе.',
         highlightRanges: [],
       },
-    ]);
+      {
+        id: 'b9bb94d7-61e2-43fe-9e41-93698f59b9fe',
+        startMs: 2000,
+        endMs: 4000,
+        speaker: 'SPEAKER_01',
+        text: 'Мне сказали действовать срочно.',
+        highlightRanges: [],
+      },
+    ];
+    const analysis = await clients.assess(transcript);
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(analysis).toMatchObject({ score: 65, modelVersion: 'qwen-test' });
+    expect(analysis.timeline.map((point) => point.score)).toEqual([34, 65]);
+    expect(transcript.map((segment) => segment.speaker)).toEqual(['Оператор', 'Клиент']);
 
     jest.restoreAllMocks();
     process.env.MOCK_PROCESSING_ENABLED = 'true';

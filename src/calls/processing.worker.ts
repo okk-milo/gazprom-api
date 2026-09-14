@@ -51,6 +51,7 @@ export class ProcessingWorker implements OnModuleInit {
 
       await this.repository.saveTranscript(call.id, transcript);
       const analysis = await this.clients.assess(transcript);
+      await this.repository.saveTranscript(call.id, transcript);
       await this.repository.complete(call.id, analysis);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Неизвестная ошибка обработки';
