@@ -52,6 +52,7 @@ describe('ProcessingClients', () => {
         startMs: 1200,
         endMs: 2400,
         speaker: 'Клиент',
+        speakerId: 'Клиент',
         text: 'Проверочная фраза',
       },
     ]);
@@ -157,6 +158,14 @@ describe('ProcessingClients sequential windows', () => {
         JSON.stringify({
           score: 5,
           summary: 'Клиент действует самостоятельно.',
+          evidence: [
+            {
+              kind: 'operator_warning',
+              start_ms: 0,
+              role: 'operator',
+              quote: 'Проверочная реплика 0',
+            },
+          ],
           factors_for: [],
           factors_against: [],
           model_version: 'test',
@@ -174,6 +183,7 @@ describe('ProcessingClients sequential windows', () => {
         startMs: index * 2000,
         endMs: (index + 1) * 2000,
         speaker: 'SPEAKER_00',
+        speakerId: 'SPEAKER_00',
         text: `Проверочная реплика ${index}`,
         highlightRanges: [],
       }));
@@ -185,11 +195,23 @@ describe('ProcessingClients sequential windows', () => {
       expect(requests[1]?.previous).toMatchObject({
         score: 5,
         summary: 'Клиент действует самостоятельно.',
+        evidence: [
+          {
+            kind: 'operator_warning',
+            start_ms: 0,
+            role: 'operator',
+            quote: 'Проверочная реплика 0',
+          },
+        ],
+        last_turns: expect.arrayContaining([
+          expect.objectContaining({ role: 'operator', speaker: 'SPEAKER_00' }),
+        ]),
       });
       expect(result.timeline).toHaveLength(11);
       expect(result.timeline.at(-1)?.timestampMs).toBe(652000);
       expect(result.timeline.every((point) => point.score === 5)).toBe(true);
       expect(transcript.every((segment) => segment.speaker === 'Оператор')).toBe(true);
+      expect(transcript.every((segment) => segment.speakerId === 'SPEAKER_00')).toBe(true);
     } finally {
       jest.restoreAllMocks();
       process.env.MOCK_PROCESSING_ENABLED = 'true';

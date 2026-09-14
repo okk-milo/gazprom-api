@@ -11,7 +11,10 @@ Nginx route before deploying this API version.
 
 After each window the API persists updated roles, exact-quote highlights,
 accumulated factors and one actual score at the end of the window. Only prior
-summary and two prior turns are sent as context; future windows are not used.
+category summary, up to nine source-evidence records, and two prior turns are
+sent as context; future windows are not used. Source acoustic labels are retained
+in optional `transcript[].speakerId`, independently of display `speaker`, and
+forwarded to subsequent role requests. Old snapshots without this field remain valid.
 The UI's existing 3-second polling reads these partial results. This polling
 frequency is not a guarantee of a new model assessment every three seconds.
 Constant scores are allowed; synthetic +/-18 confidence adjustments are gone.

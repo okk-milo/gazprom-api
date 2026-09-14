@@ -12,6 +12,7 @@ export interface TranscriptSegment {
   startMs: number;
   endMs: number;
   speaker: string;
+  speakerId?: string;
   text: string;
   highlightRanges: Array<{ startOffset: number; endOffset: number; kind: 'risk' | 'counter' }>;
 }

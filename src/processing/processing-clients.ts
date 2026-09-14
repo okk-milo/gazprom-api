@@ -49,12 +49,32 @@ interface LlmResponse {
   segment_roles: LlmSegmentRole[];
   model_version: string;
   summary: string;
+  evidence?: EvidenceMemory[];
+}
+
+const EVIDENCE_KINDS = [
+  'third_party_instruction',
+  'unsafe_transfer',
+  'intimidation',
+  'access_compromise',
+  'concealment',
+  'independent_decision',
+  'refusal',
+  'verification',
+  'operator_warning',
+] as const;
+interface EvidenceMemory {
+  kind: (typeof EVIDENCE_KINDS)[number];
+  start_ms: number;
+  role: 'operator' | 'client' | 'unknown';
+  quote: string;
 }
 
 interface WindowContext {
   score: number;
   summary: string;
-  last_turns: Array<{ role: 'operator' | 'client' | 'unknown'; text: string }>;
+  last_turns: Array<{ role: 'operator' | 'client' | 'unknown'; text: string; speaker?: string }>;
+  evidence?: EvidenceMemory[];
 }
 
 type ProgressCallback = (
@@ -83,6 +103,7 @@ export class ProcessingClients {
       startMs: Math.round(segment.start * 1000),
       endMs: Math.round(segment.end * 1000),
       speaker: segment.speaker_id?.trim() || 'Неизвестный',
+      ...(segment.speaker_id?.trim() ? { speakerId: segment.speaker_id.trim() } : {}),
       text: segment.text.trim(),
       highlightRanges: [],
     }));
@@ -111,6 +132,7 @@ export class ProcessingClients {
       previous = {
         score: result.score,
         summary: result.summary,
+        ...(result.evidence ? { evidence: result.evidence } : {}),
         last_turns: window.slice(-2).map((segment) => ({
           role:
             segment.speaker === 'Оператор'
@@ -119,6 +141,7 @@ export class ProcessingClients {
                 ? 'client'
                 : 'unknown',
           text: segment.text.slice(-400),
+          ...(segment.speakerId ? { speaker: segment.speakerId } : {}),
         })),
       };
       processed += window.length;
@@ -174,7 +197,7 @@ export class ProcessingClients {
       transcript: transcript.map((segment) => ({
         start_ms: segment.startMs,
         end_ms: segment.endMs,
-        speaker: segment.speaker,
+        speaker: segment.speakerId ?? segment.speaker,
         text: segment.text,
       })),
     });
@@ -242,7 +265,26 @@ export class ProcessingClients {
       segment_roles: this.readSegmentRoles(record.segment_roles),
       model_version: this.readString(record.model_version, 'Invalid LLM model version'),
       summary: this.readString(record.summary, 'Invalid LLM context summary'),
+      ...(record.evidence !== undefined
+        ? { evidence: this.readEvidenceMemory(record.evidence) }
+        : {}),
     };
+  }
+
+  private readEvidenceMemory(value: unknown): EvidenceMemory[] {
+    if (!Array.isArray(value) || value.length > 9) throw new Error('Invalid evidence memory');
+    return value.map((entry) => {
+      const record = this.readRecord(entry, 'Invalid evidence memory entry');
+      const kind = EVIDENCE_KINDS.find((kind) => kind === record.kind);
+      const role = record.role;
+      const quote = this.readString(record.quote, 'Invalid evidence memory quote');
+      const start_ms = this.readNumber(record.start_ms, 'Invalid evidence memory timestamp');
+      if (!kind || start_ms < 0 || quote.length > 280)
+        throw new Error('Invalid evidence memory fields');
+      if (role !== 'operator' && role !== 'client' && role !== 'unknown')
+        throw new Error('Invalid evidence memory role');
+      return { kind, role, quote, start_ms };
+    });
   }
 
   private readFactors(value: unknown, fieldName: string): LlmFactor[] {
