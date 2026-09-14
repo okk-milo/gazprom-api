@@ -162,7 +162,7 @@ export class CallsRepository {
   async markUploaded(callId: string): Promise<CallSnapshot | null> {
     return this.updateSnapshot(
       callId,
-      `state = 'uploaded', progress = 5, revision = revision + 1, updated_at = now(), error_message = NULL`,
+      `state = 'uploaded', progress = 5, analysis = NULL, revision = revision + 1, updated_at = now(), error_message = NULL`,
     );
   }
 
@@ -197,6 +197,23 @@ export class CallsRepository {
     );
   }
 
+  async saveAnalysisProgress(
+    callId: string,
+    transcript: TranscriptSegment[],
+    analysis: AntifraudAnalysis,
+    progress: number,
+  ): Promise<CallSnapshot | null> {
+    return this.updateSnapshot(
+      callId,
+      `state = 'analysing', transcript = $1::jsonb, analysis = $2::jsonb, progress = $3, revision = revision + 1, updated_at = now()`,
+      [
+        JSON.stringify(transcript),
+        JSON.stringify(analysis),
+        Math.min(99, Math.max(65, Math.round(progress))),
+      ],
+    );
+  }
+
   async completeWithoutSpeech(
     callId: string,
     transcript: TranscriptSegment[],
@@ -211,7 +228,7 @@ export class CallsRepository {
   async fail(callId: string, error: string): Promise<CallSnapshot | null> {
     return this.updateSnapshot(
       callId,
-      `state = 'failed', progress = 100, error_message = $1, revision = revision + 1, updated_at = now()`,
+      `state = 'failed', progress = 100, analysis = NULL, error_message = $1, revision = revision + 1, updated_at = now()`,
       [error.slice(0, 500)],
     );
   }

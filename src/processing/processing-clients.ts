@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { AppConfig } from '../config/app-config';
+import { buildAssessmentWindows, mergeAssessment } from './assessment-windows';
 import {
   type AnalysisFactor,
   type AntifraudAnalysis,
@@ -21,6 +22,7 @@ interface LlmFactor {
   description: string;
   confidence: number;
   segment_index: number;
+  quote: string;
 }
 
 interface LlmTimelinePoint {
@@ -46,7 +48,20 @@ interface LlmResponse {
   speaker_roles: LlmSpeakerRole[];
   segment_roles: LlmSegmentRole[];
   model_version: string;
+  summary: string;
 }
+
+interface WindowContext {
+  score: number;
+  summary: string;
+  last_turns: Array<{ role: 'operator' | 'client' | 'unknown'; text: string }>;
+}
+
+type ProgressCallback = (
+  analysis: AntifraudAnalysis,
+  processed: number,
+  total: number,
+) => Promise<void>;
 
 @Injectable()
 export class ProcessingClients {
@@ -73,7 +88,10 @@ export class ProcessingClients {
     }));
   }
 
-  async assess(transcript: TranscriptSegment[]): Promise<AntifraudAnalysis> {
+  async assess(
+    transcript: TranscriptSegment[],
+    onProgress?: ProgressCallback,
+  ): Promise<AntifraudAnalysis> {
     if (this.config.mockProcessingEnabled) {
       return this.mockAnalysis(transcript);
     }
@@ -82,9 +100,32 @@ export class ProcessingClients {
       throw new Error('LLM_INTERNAL_URL is not configured');
     }
 
-    const response = await this.requestLlm(transcript);
-
-    return this.toAnalysis(this.readLlmResponse(await response.json()), transcript);
+    let previous: WindowContext | undefined;
+    let analysis: AntifraudAnalysis | null = null;
+    let processed = 0;
+    for (const window of buildAssessmentWindows(transcript)) {
+      const response = await this.requestLlm(window, previous);
+      const result = this.readLlmResponse(await response.json());
+      const current = this.toAnalysis(result, window);
+      analysis = mergeAssessment(analysis, current);
+      previous = {
+        score: result.score,
+        summary: result.summary,
+        last_turns: window.slice(-2).map((segment) => ({
+          role:
+            segment.speaker === 'Оператор'
+              ? 'operator'
+              : segment.speaker === 'Клиент'
+                ? 'client'
+                : 'unknown',
+          text: segment.text.slice(-400),
+        })),
+      };
+      processed += window.length;
+      await onProgress?.(analysis, processed, transcript.length);
+    }
+    if (!analysis) throw new Error('Cannot assess an empty transcript');
+    return analysis;
   }
 
   private internalHeaders(token: string | undefined): HeadersInit {
@@ -120,12 +161,16 @@ export class ProcessingClients {
     throw new Error('ASR request could not be completed');
   }
 
-  private async requestLlm(transcript: TranscriptSegment[]): Promise<Response> {
+  private async requestLlm(
+    transcript: TranscriptSegment[],
+    previous?: WindowContext,
+  ): Promise<Response> {
     if (!this.config.llmInternalUrl) {
       throw new Error('LLM_INTERNAL_URL is not configured');
     }
 
     const body = JSON.stringify({
+      ...(previous ? { previous } : {}),
       transcript: transcript.map((segment) => ({
         start_ms: segment.startMs,
         end_ms: segment.endMs,
@@ -135,7 +180,7 @@ export class ProcessingClients {
     });
 
     for (let attempt = 1; attempt <= this.config.llmAssessmentRetryAttempts; attempt += 1) {
-      const response = await fetch(this.config.llmInternalUrl, {
+      const response = await fetch(`${this.config.llmInternalUrl.replace(/\/$/, '')}/windows`, {
         method: 'POST',
         headers: this.internalHeaders(this.config.llmInternalToken),
         body,
@@ -196,6 +241,7 @@ export class ProcessingClients {
       speaker_roles: this.readSpeakerRoles(record.speaker_roles),
       segment_roles: this.readSegmentRoles(record.segment_roles),
       model_version: this.readString(record.model_version, 'Invalid LLM model version'),
+      summary: this.readString(record.summary, 'Invalid LLM context summary'),
     };
   }
 
@@ -211,11 +257,26 @@ export class ProcessingClients {
         description: this.readString(item.description, `Invalid LLM ${fieldName} description`),
         confidence: this.readConfidence(item.confidence),
         segment_index: this.readIndex(item.segment_index),
+        quote: this.readString(item.quote, 'Invalid evidence quote'),
       };
     });
   }
 
   private toAnalysis(response: LlmResponse, transcript: TranscriptSegment[]): AntifraudAnalysis {
+    const rolesByIndex = new Map(
+      response.segment_roles.map((role) => [role.segment_index, role.role]),
+    );
+    if (
+      rolesByIndex.size !== transcript.length ||
+      transcript.some((_, index) => !rolesByIndex.has(index))
+    ) {
+      throw new Error('LLM returned incomplete segment roles');
+    }
+    for (const factor of [...response.factors_for, ...response.factors_against]) {
+      if (!transcript[factor.segment_index]?.text.includes(factor.quote)) {
+        throw new Error('LLM evidence quote is not present in the referenced segment');
+      }
+    }
     this.applySpeakerRoles(transcript, response.speaker_roles, response.segment_roles);
     this.applyHighlights(transcript, response.factors_for, 'risk');
     this.applyHighlights(transcript, response.factors_against, 'counter');
@@ -293,87 +354,9 @@ export class ProcessingClients {
     response: LlmResponse,
     transcript: TranscriptSegment[],
   ): AntifraudAnalysis['timeline'] {
-    const pointsByIndex = new Map<number, LlmTimelinePoint>();
-
-    for (const point of response.timeline) {
-      if (point.segment_index < transcript.length) {
-        pointsByIndex.set(point.segment_index, point);
-      }
-    }
-
-    const points = Array.from(pointsByIndex.values())
-      .sort((left, right) => left.segment_index - right.segment_index)
-      .map((point) => {
-        const segment = transcript[point.segment_index];
-        return segment ? { timestampMs: segment.endMs, score: point.score } : null;
-      })
-      .filter((point): point is AntifraudAnalysis['timeline'][number] => point !== null);
-
-    if (this.hasScoreVariation(points)) {
-      return points;
-    }
-
-    return this.toEvidenceTimeline(response, transcript);
-  }
-
-  private hasScoreVariation(points: AntifraudAnalysis['timeline']): boolean {
-    return new Set(points.map((point) => point.score)).size > 1;
-  }
-
-  private toEvidenceTimeline(
-    response: LlmResponse,
-    transcript: TranscriptSegment[],
-  ): AntifraudAnalysis['timeline'] {
-    const effects = new Array<number>(transcript.length).fill(0);
-
-    for (const factor of response.factors_for) {
-      const effect = effects[factor.segment_index];
-      if (effect !== undefined) {
-        effects[factor.segment_index] = effect + factor.confidence * 18;
-      }
-    }
-
-    for (const factor of response.factors_against) {
-      const effect = effects[factor.segment_index];
-      if (effect !== undefined) {
-        effects[factor.segment_index] = effect - factor.confidence * 18;
-      }
-    }
-
-    const totalEffect = effects.reduce((total, effect) => total + effect, 0);
-    let accumulatedEffect = 0;
-    const points: AntifraudAnalysis['timeline'] = [];
-
-    for (let index = 0; index < transcript.length; index += 1) {
-      const segment = transcript[index];
-      const effect = effects[index];
-
-      if (!segment || effect === undefined) {
-        continue;
-      }
-
-      accumulatedEffect += effect;
-      points.push({
-        timestampMs: segment.endMs,
-        score: this.clampScore(response.score - totalEffect + accumulatedEffect),
-      });
-    }
-
-    const lastPoint = points[points.length - 1];
-    if (lastPoint) {
-      lastPoint.score = response.score;
-    }
-
-    if (this.hasScoreVariation(points)) {
-      return points;
-    }
-
+    // One real assessment of the prefix ending at this window, never fabricated variation.
     const lastSegment = transcript[transcript.length - 1];
     return lastSegment ? [{ timestampMs: lastSegment.endMs, score: response.score }] : [];
-  }
-
-  private clampScore(value: number): number {
-    return Math.round(Math.max(0, Math.min(100, value)));
   }
 
   private applySpeakerRoles(
@@ -386,14 +369,14 @@ export class ProcessingClients {
     const aliases = new Map<string, string>();
 
     for (const [index, segment] of transcript.entries()) {
-      const role =
-        roleBySpeaker.get(segment.speaker) ??
-        (segment.speaker === 'Неизвестный' ? roleBySegment.get(index) : undefined);
+      const role = roleBySegment.get(index) ?? roleBySpeaker.get(segment.speaker);
 
       if (role === 'client') {
         segment.speaker = 'Клиент';
       } else if (role === 'operator') {
         segment.speaker = 'Оператор';
+      } else if (role === 'unknown') {
+        segment.speaker = 'Неизвестный';
       } else if (segment.speaker !== 'Неизвестный' && !this.isDisplaySpeaker(segment.speaker)) {
         const alias = aliases.get(segment.speaker) ?? `Собеседник ${aliases.size + 1}`;
         aliases.set(segment.speaker, alias);
@@ -438,7 +421,13 @@ export class ProcessingClients {
         continue;
       }
 
-      segment.highlightRanges.push({ startOffset: 0, endOffset: segment.text.length, kind });
+      const startOffset = segment.text.indexOf(factor.quote);
+      if (startOffset >= 0)
+        segment.highlightRanges.push({
+          startOffset,
+          endOffset: startOffset + factor.quote.length,
+          kind,
+        });
     }
   }
 

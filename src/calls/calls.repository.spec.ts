@@ -103,3 +103,27 @@ describe('CallsRepository.listCallHistory', () => {
     expect(database.calls[1]?.values).toEqual([5, 0]);
   });
 });
+
+describe('analysis progress', () => {
+  it('persists a partial result and revised transcript below completion', async () => {
+    const database = new TestDatabase();
+    const repository = new CallsRepository(database);
+    const analysis = {
+      score: 5,
+      factorsFor: [],
+      factorsAgainst: [],
+      timeline: [],
+      modelVersion: 'test',
+    };
+    await repository.saveAnalysisProgress('call-id', [], analysis, 150);
+    expect(database.calls[0]?.text).toContain("state = 'analysing'");
+    expect(database.calls[0]?.values).toEqual(['[]', JSON.stringify(analysis), 99, 'call-id']);
+  });
+
+  it('does not present a partial assessment as final when a later window fails', async () => {
+    const database = new TestDatabase();
+    await new CallsRepository(database).fail('call-id', 'invalid assessment');
+    expect(database.calls[0]?.text).toContain('analysis = NULL');
+    expect(database.calls[0]?.text).not.toContain('transcript =');
+  });
+});

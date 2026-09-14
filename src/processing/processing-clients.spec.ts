@@ -86,7 +86,12 @@ describe('ProcessingClients', () => {
               { speaker: 'SPEAKER_00', role: 'operator' },
               { speaker: 'SPEAKER_01', role: 'client' },
             ],
-            segment_roles: [{ segment_index: 2, role: 'client' }],
+            segment_roles: [
+              { segment_index: 0, role: 'operator' },
+              { segment_index: 1, role: 'client' },
+              { segment_index: 2, role: 'client' },
+            ],
+            summary: 'Клиент описывает перевод и указания третьих лиц.',
             model_version: 'qwen-test',
           }),
           { status: 200 },
@@ -124,7 +129,7 @@ describe('ProcessingClients', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(analysis).toMatchObject({ score: 65, modelVersion: 'qwen-test' });
-    expect(analysis.timeline.map((point) => point.score)).toEqual([34, 65]);
+    expect(analysis.timeline.map((point) => point.score)).toEqual([65]);
     expect(transcript.map((segment) => segment.speaker)).toEqual(['Оператор', 'Клиент', 'Клиент']);
 
     jest.restoreAllMocks();
@@ -132,5 +137,63 @@ describe('ProcessingClients', () => {
     delete process.env.LLM_INTERNAL_URL;
     delete process.env.LLM_ASSESSMENT_RETRY_ATTEMPTS;
     delete process.env.LLM_ASSESSMENT_RETRY_DELAY_MS;
+  });
+});
+
+describe('ProcessingClients sequential windows', () => {
+  it('processes all 326 segments, carries only previous context, and publishes incremental scores', async () => {
+    process.env.MOCK_PROCESSING_ENABLED = 'false';
+    process.env.LLM_INTERNAL_URL = 'http://llm.test/internal/v1/antifraud/assessments';
+    const requests: Array<Record<string, unknown>> = [];
+    const fetchMock = jest.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+      expect(url).toBe('http://llm.test/internal/v1/antifraud/assessments/windows');
+      const raw: unknown = JSON.parse(String(init?.body));
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw))
+        throw new Error('Invalid test request');
+      const body = raw as Record<string, unknown>;
+      if (!Array.isArray(body.transcript)) throw new Error('Missing transcript');
+      requests.push(body);
+      return new Response(
+        JSON.stringify({
+          score: 5,
+          summary: 'Клиент действует самостоятельно.',
+          factors_for: [],
+          factors_against: [],
+          model_version: 'test',
+          segment_roles: body.transcript.map((_, segment_index) => ({
+            segment_index,
+            role: 'operator',
+          })),
+        }),
+        { status: 200 },
+      );
+    });
+    try {
+      const transcript = Array.from({ length: 326 }, (_, index) => ({
+        id: String(index),
+        startMs: index * 2000,
+        endMs: (index + 1) * 2000,
+        speaker: 'SPEAKER_00',
+        text: `Проверочная реплика ${index}`,
+        highlightRanges: [],
+      }));
+      const onProgress = jest.fn(async () => {});
+      const result = await new ProcessingClients(new AppConfig()).assess(transcript, onProgress);
+      expect(fetchMock).toHaveBeenCalledTimes(11);
+      expect(onProgress).toHaveBeenCalledTimes(11);
+      expect(requests[0]).not.toHaveProperty('previous');
+      expect(requests[1]?.previous).toMatchObject({
+        score: 5,
+        summary: 'Клиент действует самостоятельно.',
+      });
+      expect(result.timeline).toHaveLength(11);
+      expect(result.timeline.at(-1)?.timestampMs).toBe(652000);
+      expect(result.timeline.every((point) => point.score === 5)).toBe(true);
+      expect(transcript.every((segment) => segment.speaker === 'Оператор')).toBe(true);
+    } finally {
+      jest.restoreAllMocks();
+      process.env.MOCK_PROCESSING_ENABLED = 'true';
+      delete process.env.LLM_INTERNAL_URL;
+    }
   });
 });
