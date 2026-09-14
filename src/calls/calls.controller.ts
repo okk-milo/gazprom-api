@@ -8,6 +8,9 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  DefaultValuePipe,
+  ParseIntPipe,
+  Query,
 } from '@nestjs/common';
 import {
   ApiBody,
@@ -108,9 +111,9 @@ export class CallsController {
   }
 
   @Get('calls')
-  @ApiOkResponse({ description: 'Последние проверки звонков' })
-  listCallHistory() {
-    return this.callsService.listCallHistory();
+  @ApiOkResponse({ description: 'Страница предыдущих проверок звонков' })
+  listCallHistory(@Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number) {
+    return this.callsService.listCallHistory(page);
   }
 
   @Get('calls/:callId')

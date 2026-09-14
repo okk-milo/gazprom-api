@@ -63,6 +63,13 @@ export interface CallHistoryItem {
   createdAt: string;
 }
 
+export interface CallHistoryPage {
+  items: CallHistoryItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
 export interface Employee {
   id: string;
   name: string;

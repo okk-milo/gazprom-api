@@ -68,6 +68,7 @@ describe('CallsRepository.listCallHistory', () => {
     const database = new TestDatabase();
     const createdAt = new Date('2026-09-14T00:19:45.670Z');
     database.responses = [
+      [{ total: 1 }],
       [
         {
           id: 'e64dcded-5c04-4ece-be22-845e8e906ae7',
@@ -83,19 +84,22 @@ describe('CallsRepository.listCallHistory', () => {
     ];
     const repository = new CallsRepository(database);
 
-    await expect(repository.listCallHistory()).resolves.toEqual([
-      {
-        id: 'e64dcded-5c04-4ece-be22-845e8e906ae7',
-        fileName: 'call.mp3',
-        state: 'completed',
-        progress: 100,
-        score: 72,
-        dealTitle: 'Демонстрационная сделка',
-        employeeName: 'Сотрудник 1',
-        createdAt: createdAt.toISOString(),
-      },
-    ]);
-    expect(database.calls[0]?.text).toContain('JOIN deals');
-    expect(database.calls[0]?.text).toContain('LIMIT 50');
+    await expect(repository.listCallHistory(1)).resolves.toEqual({
+      items: [
+        {
+          id: 'e64dcded-5c04-4ece-be22-845e8e906ae7',
+          fileName: 'call.mp3',
+          state: 'completed',
+          progress: 100,
+          score: 72,
+          dealTitle: 'Демонстрационная сделка',
+          employeeName: 'Сотрудник 1',
+          createdAt: createdAt.toISOString(),
+        },
+      ],
+      total: 1,
+    });
+    expect(database.calls[1]?.text).toContain('JOIN deals');
+    expect(database.calls[1]?.values).toEqual([5, 0]);
   });
 });

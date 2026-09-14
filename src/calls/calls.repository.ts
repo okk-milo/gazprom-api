@@ -12,6 +12,8 @@ import {
   type TranscriptSegment,
 } from './calls.types';
 
+const CALL_HISTORY_PAGE_SIZE = 5;
+
 interface EmployeeRow extends QueryResultRow {
   id: string;
   name: string;
@@ -48,6 +50,10 @@ interface CallHistoryRow extends QueryResultRow {
   deal_title: string;
   employee_name: string;
   created_at: Date;
+}
+
+interface CallHistoryCountRow extends QueryResultRow {
+  total: number;
 }
 
 interface DatabaseClient {
@@ -215,7 +221,10 @@ export class CallsRepository {
     return rows[0] ? this.toSnapshot(rows[0]) : null;
   }
 
-  async listCallHistory(): Promise<CallHistoryItem[]> {
+  async listCallHistory(page: number): Promise<{ items: CallHistoryItem[]; total: number }> {
+    const countRows = await this.database.query<CallHistoryCountRow>(
+      'SELECT count(*)::integer AS total FROM calls',
+    );
     const rows = await this.database.query<CallHistoryRow>(
       `SELECT calls.id,
               calls.file_name,
@@ -229,19 +238,24 @@ export class CallsRepository {
        JOIN deals ON deals.id = calls.deal_id
        JOIN employees ON employees.id = calls.employee_id
        ORDER BY calls.created_at DESC
-       LIMIT 50`,
+       LIMIT $1
+       OFFSET $2`,
+      [CALL_HISTORY_PAGE_SIZE, (page - 1) * CALL_HISTORY_PAGE_SIZE],
     );
 
-    return rows.map((row) => ({
-      id: row.id,
-      fileName: row.file_name,
-      state: row.state,
-      progress: row.progress,
-      score: row.score,
-      dealTitle: row.deal_title,
-      employeeName: row.employee_name,
-      createdAt: row.created_at.toISOString(),
-    }));
+    return {
+      items: rows.map((row) => ({
+        id: row.id,
+        fileName: row.file_name,
+        state: row.state,
+        progress: row.progress,
+        score: row.score,
+        dealTitle: row.deal_title,
+        employeeName: row.employee_name,
+        createdAt: row.created_at.toISOString(),
+      })),
+      total: countRows[0]?.total ?? 0,
+    };
   }
 
   async getSourceKey(callId: string): Promise<string | null> {

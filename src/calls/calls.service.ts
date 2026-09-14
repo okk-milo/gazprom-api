@@ -3,7 +3,9 @@ import { randomUUID } from 'node:crypto';
 import { AppConfig } from '../config/app-config';
 import { StorageService } from '../storage/storage.service';
 import { CallsRepository } from './calls.repository';
-import { type CallHistoryItem, type CallSnapshot, type Deal, type Employee } from './calls.types';
+import { type CallHistoryPage, type CallSnapshot, type Deal, type Employee } from './calls.types';
+
+const CALL_HISTORY_PAGE_SIZE = 5;
 
 @Injectable()
 export class CallsService {
@@ -92,8 +94,15 @@ export class CallsService {
     return call;
   }
 
-  async listCallHistory(): Promise<CallHistoryItem[]> {
-    return this.repository.listCallHistory();
+  async listCallHistory(page: number): Promise<CallHistoryPage> {
+    const normalizedPage = Number.isSafeInteger(page) && page > 0 ? page : 1;
+    const result = await this.repository.listCallHistory(normalizedPage);
+
+    return {
+      ...result,
+      page: normalizedPage,
+      pageSize: CALL_HISTORY_PAGE_SIZE,
+    };
   }
 
   async getDownloadUrl(callId: string): Promise<string> {
