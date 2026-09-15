@@ -63,6 +63,39 @@ describe('CallsRepository.completeWithoutSpeech', () => {
   });
 });
 
+describe('CallsRepository.complete', () => {
+  it('publishes the reviewed final transcript and assessment in one update', async () => {
+    const database = new TestDatabase();
+    const repository = new CallsRepository(database);
+    const analysis = {
+      score: 10,
+      factorsFor: [],
+      factorsAgainst: [],
+      timeline: [],
+      modelVersion: 'test',
+    };
+    const transcript = [
+      {
+        id: 'final',
+        startMs: 0,
+        endMs: 1000,
+        speaker: 'Клиент',
+        text: 'Здравствуйте.',
+        highlightRanges: [],
+      },
+    ];
+    await repository.complete('call', analysis, transcript);
+    expect(database.calls).toHaveLength(1);
+    expect(database.calls[0]?.text).toContain("state = 'completed'");
+    expect(database.calls[0]?.text).toContain('analysis = $1::jsonb, transcript = $2::jsonb');
+    expect(database.calls[0]?.values).toEqual([
+      JSON.stringify(analysis),
+      JSON.stringify(transcript),
+      'call',
+    ]);
+  });
+});
+
 describe('CallsRepository.saveProgress', () => {
   it('persists speech and risk but never publishes working evidence as final', async () => {
     const database = new TestDatabase();

@@ -210,11 +210,15 @@ export class CallsRepository {
     );
   }
 
-  async complete(callId: string, analysis: AntifraudAnalysis): Promise<CallSnapshot | null> {
+  async complete(
+    callId: string,
+    analysis: AntifraudAnalysis,
+    transcript: TranscriptSegment[],
+  ): Promise<CallSnapshot | null> {
     return this.updateSnapshot(
       callId,
-      `state = 'completed', progress = 100, analysis = $1::jsonb, revision = revision + 1, updated_at = now()`,
-      [JSON.stringify(analysis)],
+      `state = 'completed', progress = 100, analysis = $1::jsonb, transcript = $2::jsonb, revision = revision + 1, updated_at = now()`,
+      [JSON.stringify(analysis), JSON.stringify(transcript)],
     );
   }
 

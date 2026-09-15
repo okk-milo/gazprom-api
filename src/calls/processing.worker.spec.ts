@@ -25,10 +25,10 @@ const analysis: AntifraudAnalysis = {
 };
 
 describe('ProcessingWorker progressive pipeline', () => {
-  it.each([false, true])(
-    'publishes speech first and finalizes only a complete stream (failure=%s)',
-    async (fail) => {
-      const writes: Array<{ kind: string; ids?: string[]; score?: number }> = [];
+  it.each(['complete', 'asr-error', 'final-role-error'] as const)(
+    'publishes reviewed roles and retains them through finalization (%s)',
+    async (outcome) => {
+      const writes: Array<{ kind: string; ids?: string[]; roles?: string[]; score?: number }> = [];
       const repository = {
         claimNextCall: jest.fn(async () => ({ id: 'call' })),
         saveProgress: jest.fn(
@@ -36,6 +36,7 @@ describe('ProcessingWorker progressive pipeline', () => {
             writes.push({
               kind: 'progress',
               ids: segments.map((s) => s.id),
+              roles: segments.map((s) => s.speaker),
               ...(preview ? { score: preview.score } : {}),
             });
           },
@@ -55,7 +56,7 @@ describe('ProcessingWorker progressive pipeline', () => {
             durationMs: 20000,
             segments: [segment('first', 0)],
           };
-          if (fail) throw new Error('ASR connection lost');
+          if (outcome === 'asr-error') throw new Error('ASR connection lost');
           yield {
             type: 'progress',
             sequence: 1,
@@ -73,12 +74,27 @@ describe('ProcessingWorker progressive pipeline', () => {
         },
         assessFragment: jest.fn(async (segments: TranscriptSegment[]) => {
           writes.push({ kind: 'assess', ids: segments.map((s) => s.id) });
+          for (const item of segments) item.speaker = 'Оператор';
           return { analysis, context: { score: analysis.score, summary: '', last_turns: [] } };
         }),
-        assess: jest.fn(async (segments: TranscriptSegment[]) => {
-          writes.push({ kind: 'final', ids: segments.map((s) => s.id) });
-          return { ...analysis, score: 10 };
-        }),
+        assess: jest.fn(
+          async (
+            segments: TranscriptSegment[],
+            onProgress?: (
+              value: AntifraudAnalysis,
+              processed: number,
+              total: number,
+            ) => Promise<void>,
+          ) => {
+            writes.push({ kind: 'final', ids: segments.map((s) => s.id) });
+            if (segments[0]) segments[0].speaker = 'Клиент';
+            // The remaining final transcript still has raw roles at this point.
+            await onProgress?.(analysis, 1, segments.length);
+            if (outcome === 'final-role-error') throw new Error('Final role assessment failed');
+            for (const item of segments) item.speaker = 'Клиент';
+            return { ...analysis, score: 10 };
+          },
+        ),
       };
       const module = await Test.createTestingModule({
         providers: [
@@ -92,12 +108,19 @@ describe('ProcessingWorker progressive pipeline', () => {
       try {
         await module.get(ProcessingWorker).processNextCall();
         expect(writes.slice(0, 2)).toEqual([
-          { kind: 'progress', ids: ['first'] },
           { kind: 'assess', ids: ['first'] },
+          { kind: 'progress', ids: ['first'], roles: ['Оператор'], score: 20 },
         ]);
-        if (fail) {
-          expect(repository.fail).toHaveBeenCalledWith('call', 'ASR connection lost');
-          expect(clients.assess).not.toHaveBeenCalled();
+        for (const write of writes.filter((item) => item.kind === 'progress')) {
+          expect(write.roles?.every((role) => role === 'Оператор')).toBe(true);
+          expect(write.ids?.some((id) => id.startsWith('final'))).toBe(false);
+        }
+        if (outcome !== 'complete') {
+          expect(repository.fail).toHaveBeenCalledWith(
+            'call',
+            outcome === 'asr-error' ? 'ASR connection lost' : 'Final role assessment failed',
+          );
+          if (outcome === 'asr-error') expect(clients.assess).not.toHaveBeenCalled();
           expect(repository.complete).not.toHaveBeenCalled();
         } else {
           expect(
@@ -113,6 +136,10 @@ describe('ProcessingWorker progressive pipeline', () => {
                 { timestampMs: 20000, score: 10 },
               ],
             }),
+            [
+              expect.objectContaining({ id: 'final-first', speaker: 'Клиент' }),
+              expect.objectContaining({ id: 'final-second', speaker: 'Клиент' }),
+            ],
           );
           expect(repository.fail).not.toHaveBeenCalled();
         }
