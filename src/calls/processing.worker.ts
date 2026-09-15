@@ -1,7 +1,9 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
 import { AppConfig } from '../config/app-config';
-import { ProcessingClients } from '../processing/processing-clients';
+import { ProcessingClients, type WindowContext } from '../processing/processing-clients';
+import { buildAssessmentWindows } from '../processing/assessment-windows';
+import { type AntifraudAnalysis, type RiskPoint, type TranscriptSegment } from './calls.types';
 import { CallsRepository } from './calls.repository';
 import { CallsService } from './calls.service';
 
@@ -42,23 +44,7 @@ export class ProcessingWorker implements OnModuleInit {
       const sourceUrl = this.config.mockProcessingEnabled
         ? 'mock://audio'
         : await this.callsService.getDownloadUrl(call.id);
-      const transcript = await this.clients.transcribe(sourceUrl);
-
-      if (transcript.length === 0) {
-        await this.repository.completeWithoutSpeech(call.id, transcript);
-        return;
-      }
-
-      await this.repository.saveTranscript(call.id, transcript);
-      const analysis = await this.clients.assess(transcript, async (partial, processed, total) => {
-        await this.repository.saveAnalysisProgress(
-          call.id,
-          transcript,
-          partial,
-          65 + (processed / total) * 34,
-        );
-      });
-      await this.repository.complete(call.id, analysis);
+      await this.processStream(call.id, sourceUrl);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Неизвестная ошибка обработки';
       this.logger.error(message);
@@ -68,5 +54,57 @@ export class ProcessingWorker implements OnModuleInit {
     } finally {
       this.isProcessing = false;
     }
+  }
+
+  private async processStream(callId: string, sourceUrl: string): Promise<void> {
+    let transcript: TranscriptSegment[] = [];
+    let preview: AntifraudAnalysis | null = null;
+    const previewTimeline: RiskPoint[] = [];
+    let context: WindowContext | undefined;
+    let durationMs = 0;
+    for await (const update of this.clients.streamTranscript(sourceUrl)) {
+      durationMs = update.durationMs;
+      if (update.type === 'complete') {
+        transcript = update.segments;
+        await this.repository.saveProgress(callId, transcript, preview, 85, true);
+        continue;
+      }
+      transcript.push(...update.segments);
+      const progress = 10 + (70 * update.processedMs) / Math.max(1, update.durationMs);
+      // Publish speech before waiting for its LLM assessment.
+      await this.repository.saveProgress(callId, transcript, preview, progress);
+      for (const fragment of buildAssessmentWindows(update.segments)) {
+        const result = await this.clients.assessFragment(fragment, context);
+        context = result.context;
+        preview = {
+          ...result.analysis,
+          timeline: [...previewTimeline],
+        };
+      }
+      if (preview && update.segments.length) {
+        previewTimeline.push({ timestampMs: update.processedMs, score: preview.score });
+        preview.timeline = [...previewTimeline];
+      }
+      await this.repository.saveProgress(callId, transcript, preview, progress);
+    }
+    if (transcript.length === 0) {
+      await this.repository.completeWithoutSpeech(callId, transcript);
+      return;
+    }
+    // Revisit the full-context transcript in bounded chronological windows. Never
+    // overwrite historical preview points with hindsight from the end of the call.
+    const final = await this.clients.assess(transcript, async (_partial, processed, total) => {
+      await this.repository.saveProgress(
+        callId,
+        transcript,
+        preview,
+        85 + (14 * processed) / total,
+        true,
+      );
+    });
+    const timeline = previewTimeline.filter((point) => point.timestampMs < durationMs);
+    timeline.push({ timestampMs: durationMs, score: final.score });
+    await this.repository.saveProgress(callId, transcript, preview, 99, true);
+    await this.repository.complete(callId, { ...final, timeline });
   }
 }

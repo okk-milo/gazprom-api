@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { AppConfig } from '../config/app-config';
 import { buildAssessmentWindows, mergeAssessment } from './assessment-windows';
+import { readNdjson } from './ndjson';
 import {
   type AnalysisFactor,
   type AntifraudAnalysis,
@@ -70,11 +71,19 @@ interface EvidenceMemory {
   quote: string;
 }
 
-interface WindowContext {
+export interface WindowContext {
   score: number;
   summary: string;
   last_turns: Array<{ role: 'operator' | 'client' | 'unknown'; text: string; speaker?: string }>;
   evidence?: EvidenceMemory[];
+}
+
+export interface TranscriptionUpdate {
+  type: 'progress' | 'complete';
+  sequence: number;
+  processedMs: number;
+  durationMs: number;
+  segments: TranscriptSegment[];
 }
 
 type ProgressCallback = (
@@ -98,6 +107,10 @@ export class ProcessingClients {
 
     const response = await this.requestAsr(sourceUrl);
     const payload = this.readAsrResponse(await response.json());
+    return this.toTranscript(payload);
+  }
+
+  private toTranscript(payload: AsrResponse): TranscriptSegment[] {
     return payload.segments.map((segment) => ({
       id: randomUUID(),
       startMs: Math.round(segment.start * 1000),
@@ -107,6 +120,98 @@ export class ProcessingClients {
       text: segment.text.trim(),
       highlightRanges: [],
     }));
+  }
+
+  async *streamTranscript(sourceUrl: string): AsyncGenerator<TranscriptionUpdate> {
+    if (this.config.mockProcessingEnabled) {
+      const segments = this.mockTranscript();
+      const durationMs = segments.at(-1)?.endMs ?? 0;
+      yield { type: 'progress', sequence: 0, processedMs: durationMs, durationMs, segments };
+      yield { type: 'complete', sequence: 1, processedMs: durationMs, durationMs, segments };
+      return;
+    }
+    const response = await this.requestAsr(sourceUrl, true);
+    let expectedSequence = 0;
+    let previousTime = 0;
+    let duration: number | null = null;
+    let completed = false;
+    for await (const raw of readNdjson(response)) {
+      const item = this.readRecord(raw, 'Invalid ASR streaming message');
+      if (item.type === 'error') throw new Error('ASR progressive transcription failed');
+      if (completed || (item.type !== 'progress' && item.type !== 'complete')) {
+        throw new Error('Unexpected ASR streaming event');
+      }
+      const sequence = this.readIndex(item.sequence);
+      const processedMs = this.readIndex(item.processed_ms);
+      const durationMs = this.readIndex(item.duration_ms);
+      if (
+        sequence !== expectedSequence ||
+        processedMs < previousTime ||
+        (item.type === 'progress' && expectedSequence > 0 && processedMs === previousTime) ||
+        processedMs > durationMs ||
+        (duration !== null && duration !== durationMs) ||
+        (item.type === 'complete' && processedMs !== durationMs)
+      ) {
+        throw new Error('ASR streaming sequence or timestamps are inconsistent');
+      }
+      const segments = this.toTranscript(this.readAsrResponse(item));
+      if (
+        segments.some(
+          (segment) =>
+            segment.startMs < 0 ||
+            segment.endMs < segment.startMs ||
+            segment.endMs > processedMs + 50,
+        )
+      ) {
+        throw new Error('ASR segment exceeds the processed audio interval');
+      }
+      if (item.type === 'progress') {
+        // The ASR contract retains one second of uncommitted boundary audio.
+        // Do not reject overlapping speakers/words within a valid new interval.
+        if (segments.some((segment) => segment.startMs + 50 < previousTime - 1000))
+          throw new Error('ASR stream repeats an already committed interval');
+      }
+      expectedSequence += 1;
+      previousTime = processedMs;
+      duration = durationMs;
+      completed = item.type === 'complete';
+      yield { type: item.type, sequence, processedMs, durationMs, segments };
+    }
+    if (!completed) throw new Error('ASR stream ended before transcription completed');
+  }
+
+  async assessFragment(
+    transcript: TranscriptSegment[],
+    previous?: WindowContext,
+  ): Promise<{
+    analysis: AntifraudAnalysis;
+    context: WindowContext;
+  }> {
+    if (this.config.mockProcessingEnabled) {
+      const analysis = this.mockAnalysis(transcript);
+      return { analysis, context: { score: analysis.score, summary: '', last_turns: [] } };
+    }
+    const response = await this.requestLlm(transcript, previous);
+    const result = this.readLlmResponse(await response.json());
+    const analysis = this.toAnalysis(result, transcript);
+    return {
+      analysis,
+      context: {
+        score: result.score,
+        summary: result.summary,
+        ...(result.evidence ? { evidence: result.evidence } : {}),
+        last_turns: transcript.slice(-2).map((segment) => ({
+          role:
+            segment.speaker === 'Оператор'
+              ? 'operator'
+              : segment.speaker === 'Клиент'
+                ? 'client'
+                : 'unknown',
+          text: segment.text.slice(-400),
+          ...(segment.speakerId ? { speaker: segment.speakerId } : {}),
+        })),
+      },
+    };
   }
 
   async assess(
@@ -125,25 +230,9 @@ export class ProcessingClients {
     let analysis: AntifraudAnalysis | null = null;
     let processed = 0;
     for (const window of buildAssessmentWindows(transcript)) {
-      const response = await this.requestLlm(window, previous);
-      const result = this.readLlmResponse(await response.json());
-      const current = this.toAnalysis(result, window);
-      analysis = mergeAssessment(analysis, current);
-      previous = {
-        score: result.score,
-        summary: result.summary,
-        ...(result.evidence ? { evidence: result.evidence } : {}),
-        last_turns: window.slice(-2).map((segment) => ({
-          role:
-            segment.speaker === 'Оператор'
-              ? 'operator'
-              : segment.speaker === 'Клиент'
-                ? 'client'
-                : 'unknown',
-          text: segment.text.slice(-400),
-          ...(segment.speakerId ? { speaker: segment.speakerId } : {}),
-        })),
-      };
+      const result = await this.assessFragment(window, previous);
+      analysis = mergeAssessment(analysis, result.analysis);
+      previous = result.context;
       processed += window.length;
       await onProgress?.(analysis, processed, transcript.length);
     }
@@ -158,17 +247,34 @@ export class ProcessingClients {
     };
   }
 
-  private async requestAsr(sourceUrl: string): Promise<Response> {
+  private async requestAsr(sourceUrl: string, progressive = false): Promise<Response> {
     if (!this.config.asrInternalUrl) {
       throw new Error('ASR_INTERNAL_URL is not configured');
     }
 
     for (let attempt = 1; attempt <= this.config.asrTranscriptionRetryAttempts; attempt += 1) {
-      const response = await fetch(this.config.asrInternalUrl, {
-        method: 'POST',
-        headers: this.internalHeaders(this.config.asrInternalToken),
-        body: JSON.stringify({ source_url: sourceUrl, profile: 'fast' }),
-      });
+      let response: Response;
+      try {
+        response = await this.fetchResponse(
+          this.config.asrInternalUrl.replace(/\/$/, '') + (progressive ? '/stream' : ''),
+          {
+            method: 'POST',
+            headers: this.internalHeaders(this.config.asrInternalToken),
+            body: JSON.stringify({
+              source_url: sourceUrl,
+              profile: 'fast',
+              ...(progressive ? { step_seconds: this.config.analysisStepSeconds } : {}),
+            }),
+          },
+          progressive ? 30000 : 600000,
+          progressive,
+        );
+      } catch {
+        if (attempt >= Math.min(3, this.config.asrTranscriptionRetryAttempts))
+          throw new Error('ASR connection failed');
+        await this.wait(this.config.asrTranscriptionRetryDelayMs);
+        continue;
+      }
 
       if (response.ok) {
         return response;
@@ -203,11 +309,23 @@ export class ProcessingClients {
     });
 
     for (let attempt = 1; attempt <= this.config.llmAssessmentRetryAttempts; attempt += 1) {
-      const response = await fetch(`${this.config.llmInternalUrl.replace(/\/$/, '')}/windows`, {
-        method: 'POST',
-        headers: this.internalHeaders(this.config.llmInternalToken),
-        body,
-      });
+      let response: Response;
+      try {
+        response = await this.fetchResponse(
+          `${this.config.llmInternalUrl.replace(/\/$/, '')}/windows`,
+          {
+            method: 'POST',
+            headers: this.internalHeaders(this.config.llmInternalToken),
+            body,
+          },
+          120000,
+        );
+      } catch {
+        if (attempt >= Math.min(3, this.config.llmAssessmentRetryAttempts))
+          throw new Error('LLM connection failed');
+        await this.wait(this.config.llmAssessmentRetryDelayMs);
+        continue;
+      }
 
       if (response.ok) {
         return response;
@@ -227,6 +345,24 @@ export class ProcessingClients {
     await new Promise<void>((resolve) => {
       setTimeout(resolve, delayMs);
     });
+  }
+
+  private async fetchResponse(
+    url: string,
+    init: RequestInit,
+    timeoutMs: number,
+    streaming = false,
+  ): Promise<Response> {
+    // JSON responses keep a deadline through body consumption. Only the ASR
+    // stream switches from a header deadline to readNdjson's idle deadline.
+    if (!streaming) return fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, { ...init, signal: controller.signal });
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   private readAsrResponse(value: unknown): AsrResponse {

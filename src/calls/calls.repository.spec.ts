@@ -63,6 +63,47 @@ describe('CallsRepository.completeWithoutSpeech', () => {
   });
 });
 
+describe('CallsRepository.saveProgress', () => {
+  it('persists speech and risk but never publishes working evidence as final', async () => {
+    const database = new TestDatabase();
+    const repository = new CallsRepository(database);
+    const factor = {
+      id: 'factor',
+      title: 'Основание',
+      description: 'Цитата',
+      confidence: 0.8,
+      segmentId: 'segment',
+    };
+    await repository.saveProgress(
+      'call',
+      [],
+      {
+        score: 70,
+        factorsFor: [factor],
+        factorsAgainst: [factor],
+        timeline: [{ timestampMs: 10000, score: 70 }],
+        modelVersion: 'test',
+      },
+      20,
+    );
+    expect(database.calls[0]?.values).toEqual([
+      'transcribing',
+      '[]',
+      JSON.stringify({
+        score: 70,
+        factorsFor: [],
+        factorsAgainst: [],
+        timeline: [{ timestampMs: 10000, score: 70 }],
+        modelVersion: 'test',
+      }),
+      20,
+      'call',
+    ]);
+    await repository.saveProgress('call', [], null, 150, true);
+    expect(database.calls[1]?.values).toEqual(['analysing', '[]', 'null', 99, 'call']);
+  });
+});
+
 describe('CallsRepository.listCallHistory', () => {
   it('returns lightweight call history ordered by newest upload', async () => {
     const database = new TestDatabase();

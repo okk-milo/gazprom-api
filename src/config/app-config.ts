@@ -26,8 +26,15 @@ function positiveInteger(name: string, fallback: number): number {
   return value;
 }
 
+function analysisStep(): 5 | 10 {
+  const value = process.env.ANALYSIS_STEP_SECONDS?.trim() ?? '10';
+  if (value !== '5' && value !== '10') throw new Error('ANALYSIS_STEP_SECONDS must be 5 or 10');
+  return value === '5' ? 5 : 10;
+}
+
 @Injectable()
 export class AppConfig {
+  readonly analysisStepSeconds = analysisStep();
   readonly port = positiveInteger('PORT', 3000);
   readonly databaseUrl = required('DATABASE_URL');
   readonly corsOrigins = (process.env.CORS_ORIGINS ?? 'http://localhost:5173')

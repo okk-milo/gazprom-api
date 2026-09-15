@@ -189,6 +189,27 @@ export class CallsRepository {
     );
   }
 
+  async saveProgress(
+    callId: string,
+    transcript: TranscriptSegment[],
+    analysis: AntifraudAnalysis | null,
+    progress: number,
+    finalizing = false,
+  ): Promise<CallSnapshot | null> {
+    // Partial evidence is internal working context, not a conclusion about the whole call.
+    const preview = analysis ? { ...analysis, factorsFor: [], factorsAgainst: [] } : null;
+    return this.updateSnapshot(
+      callId,
+      `state = $1, transcript = $2::jsonb, analysis = $3::jsonb, progress = $4, revision = revision + 1, updated_at = now()`,
+      [
+        finalizing ? 'analysing' : 'transcribing',
+        JSON.stringify(transcript),
+        JSON.stringify(preview),
+        Math.min(99, Math.max(5, Math.round(progress))),
+      ],
+    );
+  }
+
   async complete(callId: string, analysis: AntifraudAnalysis): Promise<CallSnapshot | null> {
     return this.updateSnapshot(
       callId,
