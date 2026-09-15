@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
+import { BurnoutController } from './burnout/burnout.controller';
+import { BurnoutRepository } from './burnout/burnout.repository';
 import { CallsController } from './calls/calls.controller';
 import { CallsRepository } from './calls/calls.repository';
 import { CallsService } from './calls/calls.service';
@@ -12,9 +14,10 @@ import { StorageService } from './storage/storage.service';
 
 @Module({
   imports: [ScheduleModule.forRoot()],
-  controllers: [HealthController, CallsController],
+  controllers: [HealthController, CallsController, BurnoutController],
   providers: [
     AppConfig,
+    BurnoutRepository,
     DatabaseService,
     CallsRepository,
     CallsService,
