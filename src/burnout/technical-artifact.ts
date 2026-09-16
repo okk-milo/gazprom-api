@@ -65,7 +65,7 @@ export function technicalSourceFromArtifact(raw: unknown, id: string): Technical
       !Array.isArray(w.segmentIds) ||
       !w.segmentIds.length ||
       !Array.isArray(result.events) ||
-      result.validationVersion !== 'technical-markers-v3' ||
+      result.validationVersion !== 'technical-markers-v4' ||
       result.events.length > 48 ||
       typeof result.discardedEvents !== 'number' ||
       !Number.isInteger(result.discardedEvents) ||
