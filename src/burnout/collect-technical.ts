@@ -9,7 +9,7 @@ interface Segment {
   endMs: number;
   text: string;
 }
-const version = 'technical-events-v2-explicit-markers';
+const version = 'technical-events-v3-shared-context';
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw new Error('invalid_record');
@@ -122,7 +122,7 @@ async function main(): Promise<void> {
       let current: Segment[] = [],
         chars = 0;
       for (const segment of input.segments) {
-        if (current.length && (current.length >= 80 || chars + segment.text.length > 7500)) {
+        if (current.length && (current.length >= 50 || chars + segment.text.length > 5000)) {
           windows.push(current);
           current = [];
           chars = 0;

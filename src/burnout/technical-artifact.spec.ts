@@ -30,7 +30,7 @@ function artifact() {
         segmentIds: ['s1', 's2'],
         result: {
           contentType: 'conversation',
-          validationVersion: 'technical-markers-v4',
+          validationVersion: 'technical-markers-v5',
           discardedEvents: 0,
           events: [{ kind: 'repeat_request', segmentId: 's1', quote: 'Повторите, пожалуйста' }],
         },

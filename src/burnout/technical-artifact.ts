@@ -8,7 +8,8 @@ import {
 export function technicalSourceFromArtifact(raw: unknown, id: string): TechnicalSource {
   const input = technicalRecord(raw);
   if (
-    input.version !== 'technical-events-v2-explicit-markers' ||
+    (input.version !== 'technical-events-v2-explicit-markers' &&
+      input.version !== 'technical-events-v3-shared-context') ||
     input.sourceId !== id ||
     typeof input.fingerprint !== 'string' ||
     !/^[a-f0-9]{64}$/.test(input.fingerprint) ||
@@ -65,7 +66,7 @@ export function technicalSourceFromArtifact(raw: unknown, id: string): Technical
       !Array.isArray(w.segmentIds) ||
       !w.segmentIds.length ||
       !Array.isArray(result.events) ||
-      result.validationVersion !== 'technical-markers-v4' ||
+      result.validationVersion !== 'technical-markers-v5' ||
       result.events.length > 48 ||
       typeof result.discardedEvents !== 'number' ||
       !Number.isInteger(result.discardedEvents) ||
