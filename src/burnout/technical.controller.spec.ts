@@ -70,5 +70,32 @@ describe('Technical dataset HTTP', () => {
   it('does not mask errors as successful zero scores', async () => {
     failed = true;
     await request(app.getHttpServer()).get('/v1/burnout/technical').expect(500);
+    await request(app.getHttpServer()).get('/v1/burnout/report').expect(500);
+    failed = false;
+  });
+  it('report waits for measured audio, then exposes a typed aggregate without private inputs', async () => {
+    await request(app.getHttpServer())
+      .get('/v1/burnout/report')
+      .expect(200)
+      .expect({ state: 'empty', dataset: null });
+    const source = dataset?.sources[0];
+    if (!source || source.status !== 'measured') throw new Error('Missing fixture');
+    source.facts.audio = {
+      version: 'silero-activity-v1',
+      durationMs: 120000,
+      voicedMs: 60000,
+      longPauseMs: 4000,
+      longPauseCount: 1,
+    };
+    const response = await request(app.getHttpServer()).get('/v1/burnout/report').expect(200);
+    expect(response.body).toMatchObject({
+      state: 'ready',
+      dataset: {
+        version: 'conversation-report-v2',
+        coverage: { measured: 1 },
+        overall: { values: { speechRate: 100, longPauses: 3.33 } },
+      },
+    });
+    expect(JSON.stringify(response.body)).not.toMatch(/private-model|fingerprint|quote|segmentId/);
   });
 });

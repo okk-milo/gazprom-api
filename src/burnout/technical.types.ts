@@ -1,3 +1,5 @@
+import { parseAudioFacts, type AudioFacts } from './audio-facts';
+
 export const eventKinds = [
   'clarification',
   'repeat_request',
@@ -17,6 +19,7 @@ export interface TechnicalEvidence {
   endMs: number;
 }
 export interface TechnicalFacts {
+  audio?: AudioFacts;
   durationSeconds: number;
   speechMs: number;
   words: number;
@@ -177,7 +180,16 @@ export function parseTechnicalDataset(raw: unknown): TechnicalDataset {
       status: 'measured',
       fingerprint: s.fingerprint,
       model: s.model,
-      facts: { durationSeconds, speechMs, words, segmentCount, events },
+      facts: {
+        durationSeconds,
+        speechMs,
+        words,
+        segmentCount,
+        events,
+        ...(facts.audio === undefined
+          ? {}
+          : { audio: parseAudioFacts(facts.audio, durationSeconds) }),
+      },
     };
   });
   return {
