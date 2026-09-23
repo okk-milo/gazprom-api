@@ -5,6 +5,7 @@ import { CallsRepository } from './calls.repository';
 import { CallsService } from './calls.service';
 import { ProcessingWorker } from './processing.worker';
 import { type AntifraudAnalysis, type TranscriptSegment } from './calls.types';
+import { DatabaseService } from '../database/database.service';
 
 function segment(id: string, start: number): TranscriptSegment {
   return {
@@ -25,11 +26,52 @@ const analysis: AntifraudAnalysis = {
 };
 
 describe('ProcessingWorker progressive pipeline', () => {
+  it.each([true, false])(
+    'recovers orphaned calls only as exclusive worker owner (%s)',
+    async (ownsLock) => {
+      let held = ownsLock;
+      const lock = {
+        isHeld: () => held,
+        release: jest.fn(async () => {
+          held = false;
+        }),
+      };
+      const repository = {
+        failInterruptedCalls: jest.fn(async () => 1),
+        claimNextCall: jest.fn(async () => null),
+      };
+      const bootstrap = jest.fn();
+      const module = await Test.createTestingModule({
+        providers: [
+          ProcessingWorker,
+          { provide: AppConfig, useValue: {} },
+          { provide: CallsRepository, useValue: repository },
+          { provide: CallsService, useValue: { bootstrap } },
+          { provide: ProcessingClients, useValue: {} },
+          {
+            provide: DatabaseService,
+            useValue: { tryAcquireLock: jest.fn(async () => (ownsLock ? lock : null)) },
+          },
+        ],
+      }).compile();
+      const worker = module.get(ProcessingWorker);
+      await worker.onModuleInit();
+      await worker.processNextCall();
+      expect(bootstrap).toHaveBeenCalledTimes(1);
+      expect(repository.failInterruptedCalls).toHaveBeenCalledTimes(ownsLock ? 1 : 0);
+      expect(repository.claimNextCall).toHaveBeenCalledTimes(ownsLock ? 1 : 0);
+      held = false;
+      await worker.processNextCall();
+      expect(repository.claimNextCall).toHaveBeenCalledTimes(ownsLock ? 1 : 0);
+      await module.close();
+    },
+  );
   it.each(['complete', 'asr-error', 'final-role-error'] as const)(
     'publishes reviewed roles and retains them through finalization (%s)',
     async (outcome) => {
       const writes: Array<{ kind: string; ids?: string[]; roles?: string[]; score?: number }> = [];
       const repository = {
+        failInterruptedCalls: jest.fn(async () => 0),
         claimNextCall: jest.fn(async () => ({ id: 'call' })),
         saveProgress: jest.fn(
           async (_id: string, segments: TranscriptSegment[], preview: AntifraudAnalysis | null) => {
@@ -101,11 +143,18 @@ describe('ProcessingWorker progressive pipeline', () => {
           ProcessingWorker,
           { provide: AppConfig, useValue: { mockProcessingEnabled: true } },
           { provide: CallsRepository, useValue: repository },
-          { provide: CallsService, useValue: {} },
+          { provide: CallsService, useValue: { bootstrap: jest.fn() } },
           { provide: ProcessingClients, useValue: clients },
+          {
+            provide: DatabaseService,
+            useValue: {
+              tryAcquireLock: jest.fn(async () => ({ isHeld: () => true, release: jest.fn() })),
+            },
+          },
         ],
       }).compile();
       try {
+        await module.get(ProcessingWorker).onModuleInit();
         await module.get(ProcessingWorker).processNextCall();
         expect(writes.slice(0, 2)).toEqual([
           { kind: 'assess', ids: ['first'] },

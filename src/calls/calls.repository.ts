@@ -258,6 +258,18 @@ export class CallsRepository {
     );
   }
 
+  // Only the worker holding the database-wide processing lock may call this.
+  // Pending uploads and terminal results must never be retried or rewritten.
+  async failInterruptedCalls(): Promise<number> {
+    const rows = await this.database.query<{ id: string }>(
+      `UPDATE calls SET state = 'failed', progress = 100, analysis = NULL,
+       error_message = $1, revision = revision + 1, updated_at = now()
+       WHERE state IN ('transcribing', 'analysing') RETURNING id`,
+      ['Обработка прервана перезапуском сервиса. Требуется повторный запуск анализа.'],
+    );
+    return rows.length;
+  }
+
   async getCall(callId: string): Promise<CallSnapshot | null> {
     const rows = await this.database.query<CallRow>('SELECT * FROM calls WHERE id = $1', [callId]);
     return rows[0] ? this.toSnapshot(rows[0]) : null;

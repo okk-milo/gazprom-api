@@ -1,5 +1,6 @@
 import { AppConfig } from '../config/app-config';
 import { Agent } from 'undici';
+import * as asrHttp from 'undici';
 import { createServer } from 'node:http';
 import { ProcessingClients, type TranscriptionUpdate } from './processing-clients';
 
@@ -25,12 +26,15 @@ describe('progressive ASR client', () => {
     process.env.ASR_TRANSCRIPTION_RETRY_ATTEMPTS = '2';
     process.env.ASR_TRANSCRIPTION_RETRY_DELAY_MS = '1';
     const fetchMock = jest
-      .spyOn(global, 'fetch')
+      .spyOn(asrHttp, 'fetch')
       .mockRejectedValueOnce(new TypeError('private connection details'))
       .mockResolvedValueOnce(
-        new Response([progress, complete].map((event) => JSON.stringify(event)).join('\n') + '\n', {
-          headers: { 'Content-Type': 'application/x-ndjson' },
-        }),
+        new asrHttp.Response(
+          [progress, complete].map((event) => JSON.stringify(event)).join('\n') + '\n',
+          {
+            headers: { 'Content-Type': 'application/x-ndjson' },
+          },
+        ),
       );
     const updates: TranscriptionUpdate[] = [];
     for await (const update of new ProcessingClients(new AppConfig()).streamTranscript(
@@ -40,34 +44,46 @@ describe('progressive ASR client', () => {
     expect(updates.map((update) => update.sequence)).toEqual([0, 1]);
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
-  it('reads real HTTP keep-alives and completion with a slow consumer and releases the connection', async () => {
-    const server = createServer((_request, response) => {
-      response.writeHead(200, { 'Content-Type': 'application/x-ndjson', Connection: 'close' });
-      response.write(JSON.stringify(progress) + '\n');
-      const heartbeat = setInterval(() => response.write('\n'), 10);
-      const completion = setTimeout(() => response.end(JSON.stringify(complete) + '\n'), 80);
-      response.on('close', () => {
-        clearInterval(heartbeat);
-        clearTimeout(completion);
+  it.each([0, 65536])(
+    'reads a close-delimited ASR stream with a slow consumer (%i extra characters)',
+    async (padding) => {
+      const finalEvent = {
+        ...complete,
+        segments: [{ start: 0, end: 9, text: 'Здравствуйте.' + 'а'.repeat(padding) }],
+      };
+      const builtinFetch = jest
+        .spyOn(global, 'fetch')
+        .mockRejectedValue(new Error('Must use the patched ASR fetch'));
+      const server = createServer((_request, response) => {
+        response.useChunkedEncodingByDefault = false;
+        response.writeHead(200, { 'Content-Type': 'application/x-ndjson', Connection: 'close' });
+        response.write(JSON.stringify(progress) + '\n');
+        const heartbeat = setInterval(() => response.write('\n'), 10);
+        const completion = setTimeout(() => response.end(JSON.stringify(finalEvent) + '\n'), 80);
+        response.on('close', () => {
+          clearInterval(heartbeat);
+          clearTimeout(completion);
+        });
       });
-    });
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const address = server.address();
-    if (!address || typeof address === 'string') throw new Error('Missing test server address');
-    process.env.ASR_INTERNAL_URL = `http://127.0.0.1:${address.port}/internal/v1/transcriptions`;
-    const clients = new ProcessingClients(new AppConfig());
-    try {
-      const iterator = clients.streamTranscript('https://storage.test/file.wav');
-      expect((await iterator.next()).value).toMatchObject({ type: 'progress', sequence: 0 });
-      await new Promise((resolve) => setTimeout(resolve, 120));
-      expect((await iterator.next()).value).toMatchObject({ type: 'complete', sequence: 1 });
-      expect((await iterator.next()).done).toBe(true);
-    } finally {
-      await clients.onModuleDestroy();
-      server.closeAllConnections();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-    }
-  });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Missing test server address');
+      process.env.ASR_INTERNAL_URL = `http://127.0.0.1:${address.port}/internal/v1/transcriptions`;
+      const clients = new ProcessingClients(new AppConfig());
+      try {
+        const iterator = clients.streamTranscript('https://storage.test/file.wav');
+        expect((await iterator.next()).value).toMatchObject({ type: 'progress', sequence: 0 });
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        expect((await iterator.next()).value).toMatchObject({ type: 'complete', sequence: 1 });
+        expect((await iterator.next()).done).toBe(true);
+        expect(builtinFetch).not.toHaveBeenCalled();
+      } finally {
+        await clients.onModuleDestroy();
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    },
+  );
   it('retries a stateless LLM connection failure and bounds repeated failures', async () => {
     const deadline = jest.spyOn(AbortSignal, 'timeout');
     process.env.LLM_INTERNAL_URL = 'http://llm.test/assessments';
@@ -108,8 +124,8 @@ describe('progressive ASR client', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
   async function run(events: unknown[]): Promise<TranscriptionUpdate[]> {
-    jest.spyOn(global, 'fetch').mockResolvedValue(
-      new Response(events.map((event) => JSON.stringify(event)).join('\n') + '\n', {
+    jest.spyOn(asrHttp, 'fetch').mockResolvedValue(
+      new asrHttp.Response(events.map((event) => JSON.stringify(event)).join('\n') + '\n', {
         headers: { 'Content-Type': 'application/x-ndjson' },
       }),
     );
@@ -129,7 +145,7 @@ describe('progressive ASR client', () => {
       durationMs: 20000,
       segments: [{ startMs: 0, endMs: 9000, text: 'Здравствуйте.', speaker: 'Неизвестный' }],
     });
-    expect(fetch).toHaveBeenCalledWith(
+    expect(asrHttp.fetch).toHaveBeenCalledWith(
       'http://asr.test/internal/v1/transcriptions/stream',
       expect.objectContaining({
         body: JSON.stringify({
@@ -142,10 +158,13 @@ describe('progressive ASR client', () => {
     );
   });
   it('ignores transport keep-alives without publishing extra progress or shifting sequence', async () => {
-    jest.spyOn(global, 'fetch').mockResolvedValue(
-      new Response('\n' + JSON.stringify(progress) + '\n\n\n' + JSON.stringify(complete) + '\n', {
-        headers: { 'Content-Type': 'application/x-ndjson' },
-      }),
+    jest.spyOn(asrHttp, 'fetch').mockResolvedValue(
+      new asrHttp.Response(
+        '\n' + JSON.stringify(progress) + '\n\n\n' + JSON.stringify(complete) + '\n',
+        {
+          headers: { 'Content-Type': 'application/x-ndjson' },
+        },
+      ),
     );
     const clients = new ProcessingClients(new AppConfig());
     const updates: TranscriptionUpdate[] = [];

@@ -1,6 +1,6 @@
 import { Injectable, type OnModuleDestroy } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { Agent } from 'undici';
+import { Agent, fetch as asrFetch, type Response as HttpResponse } from 'undici';
 import { AppConfig } from '../config/app-config';
 import { buildAssessmentWindows, mergeAssessment } from './assessment-windows';
 import { ASR_STREAM_IDLE_TIMEOUT_MS, readNdjson } from './ndjson';
@@ -247,20 +247,23 @@ export class ProcessingClients implements OnModuleDestroy {
     return analysis;
   }
 
-  private internalHeaders(token: string | undefined): HeadersInit {
+  private internalHeaders(token: string | undefined): Record<string, string> {
     return {
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     };
   }
 
-  private async requestAsr(sourceUrl: string, progressive = false): Promise<Response> {
+  private async requestAsr(
+    sourceUrl: string,
+    progressive = false,
+  ): Promise<Response | HttpResponse> {
     if (!this.config.asrInternalUrl) {
       throw new Error('ASR_INTERNAL_URL is not configured');
     }
 
     for (let attempt = 1; attempt <= this.config.asrTranscriptionRetryAttempts; attempt += 1) {
-      let response: Response;
+      let response: Response | HttpResponse;
       try {
         response = await this.fetchResponse(
           this.config.asrInternalUrl.replace(/\/$/, '') + (progressive ? '/stream' : ''),
@@ -287,6 +290,8 @@ export class ProcessingClients implements OnModuleDestroy {
         return response;
       }
 
+      await response.body?.cancel();
+
       if (response.status !== 503 || attempt === this.config.asrTranscriptionRetryAttempts) {
         throw new Error(`ASR request failed with HTTP ${response.status}`);
       }
@@ -300,7 +305,7 @@ export class ProcessingClients implements OnModuleDestroy {
   private async requestLlm(
     transcript: TranscriptSegment[],
     previous?: WindowContext,
-  ): Promise<Response> {
+  ): Promise<Response | HttpResponse> {
     if (!this.config.llmInternalUrl) {
       throw new Error('LLM_INTERNAL_URL is not configured');
     }
@@ -316,7 +321,7 @@ export class ProcessingClients implements OnModuleDestroy {
     });
 
     for (let attempt = 1; attempt <= this.config.llmAssessmentRetryAttempts; attempt += 1) {
-      let response: Response;
+      let response: Response | HttpResponse;
       try {
         response = await this.fetchResponse(
           `${this.config.llmInternalUrl.replace(/\/$/, '')}/windows`,
@@ -356,10 +361,10 @@ export class ProcessingClients implements OnModuleDestroy {
 
   private async fetchResponse(
     url: string,
-    init: RequestInit,
+    init: { method: string; headers: Record<string, string>; body: string },
     timeoutMs: number,
     streaming = false,
-  ): Promise<Response> {
+  ): Promise<Response | HttpResponse> {
     // JSON responses keep a deadline through body consumption. Only the ASR
     // stream switches from a header deadline to readNdjson's idle deadline.
     if (!streaming) return fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
@@ -369,7 +374,9 @@ export class ProcessingClients implements OnModuleDestroy {
       // Native fetch otherwise uses its own five-minute body timeout, shorter
       // than the ASR final pass. Do not change global or LLM request dispatchers.
       const options = { ...init, signal: controller.signal, dispatcher: this.asrStreamDispatcher };
-      return await fetch(url, options);
+      // Keep fetch and dispatcher on the same patched implementation. The
+      // Node-bundled parser may still crash when FIN arrives under backpressure.
+      return await asrFetch(url, options);
     } finally {
       clearTimeout(timeout);
     }

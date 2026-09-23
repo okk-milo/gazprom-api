@@ -12,6 +12,23 @@ class TestDatabase {
   }
 }
 
+describe('CallsRepository.failInterruptedCalls', () => {
+  it('marks only interrupted states as failed, clears preview score and preserves transcript', async () => {
+    const database = new TestDatabase();
+    database.responses = [[{ id: 'one' }, { id: 'two' }]];
+    const repository = new CallsRepository(database);
+    await expect(repository.failInterruptedCalls()).resolves.toBe(2);
+    expect(database.calls).toHaveLength(1);
+    expect(database.calls[0]?.text).toContain("WHERE state IN ('transcribing', 'analysing')");
+    expect(database.calls[0]?.text).toContain("state = 'failed'");
+    expect(database.calls[0]?.text).toContain('analysis = NULL');
+    expect(database.calls[0]?.text).not.toContain('transcript =');
+    expect(database.calls[0]?.values).toEqual([
+      'Обработка прервана перезапуском сервиса. Требуется повторный запуск анализа.',
+    ]);
+  });
+});
+
 describe('CallsRepository.deleteEmployee', () => {
   const employeeId = '6e1781c1-9a4b-4e74-aaea-4d8c64726c94';
 

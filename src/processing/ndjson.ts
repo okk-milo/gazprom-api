@@ -5,6 +5,8 @@ const transportCodes = new Set([
   'UND_ERR_HEADERS_TIMEOUT',
   'UND_ERR_CONNECT_TIMEOUT',
   'UND_ERR_SOCKET',
+  'UND_ERR_RES_CONTENT_LENGTH_MISMATCH',
+  'HPE_INVALID_EOF_STATE',
   'ECONNRESET',
   'ECONNREFUSED',
   'ETIMEDOUT',
@@ -24,7 +26,7 @@ function transportCode(error: unknown): string | null {
 
 // Decode incrementally: a network frame is not a JSON message or a UTF-8 character.
 export async function* readNdjson(
-  response: Response,
+  response: Response | HttpResponse,
   idleTimeoutMs = ASR_STREAM_IDLE_TIMEOUT_MS,
 ): AsyncGenerator<unknown> {
   if (!response.headers.get('content-type')?.startsWith('application/x-ndjson') || !response.body) {
@@ -45,7 +47,7 @@ export async function* readNdjson(
           Math.max(1, idleTimeoutMs - (Date.now() - lastEventAt)),
         );
       });
-      let part: ReadableStreamReadResult<Uint8Array>;
+      let part: { done: boolean; value?: unknown };
       try {
         part = await Promise.race([next, idle]);
       } catch (error: unknown) {
@@ -58,7 +60,11 @@ export async function* readNdjson(
         if (timeout) clearTimeout(timeout);
       }
       const { done, value } = part;
-      pending += done ? decoder.decode() : decoder.decode(value, { stream: true });
+      if (done) pending += decoder.decode();
+      else {
+        if (!(value instanceof Uint8Array)) throw new Error('ASR stream contains invalid bytes');
+        pending += decoder.decode(value, { stream: true });
+      }
       let newline = pending.indexOf('\n');
       while (newline !== -1) {
         if (newline > maxLineLength) throw new Error('ASR streaming message is too large');
@@ -87,3 +93,4 @@ export async function* readNdjson(
     reader.releaseLock();
   }
 }
+import { type Response as HttpResponse } from 'undici';
