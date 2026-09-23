@@ -1,8 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, type OnModuleDestroy } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import { Agent } from 'undici';
 import { AppConfig } from '../config/app-config';
 import { buildAssessmentWindows, mergeAssessment } from './assessment-windows';
-import { readNdjson } from './ndjson';
+import { ASR_STREAM_IDLE_TIMEOUT_MS, readNdjson } from './ndjson';
 import {
   type AnalysisFactor,
   type AntifraudAnalysis,
@@ -93,8 +94,14 @@ type ProgressCallback = (
 ) => Promise<void>;
 
 @Injectable()
-export class ProcessingClients {
+export class ProcessingClients implements OnModuleDestroy {
+  private readonly asrStreamDispatcher = new Agent({ bodyTimeout: ASR_STREAM_IDLE_TIMEOUT_MS });
+
   constructor(private readonly config: AppConfig) {}
+
+  async onModuleDestroy(): Promise<void> {
+    await this.asrStreamDispatcher.destroy();
+  }
 
   async transcribe(sourceUrl: string): Promise<TranscriptSegment[]> {
     if (this.config.mockProcessingEnabled) {
@@ -359,7 +366,10 @@ export class ProcessingClients {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      return await fetch(url, { ...init, signal: controller.signal });
+      // Native fetch otherwise uses its own five-minute body timeout, shorter
+      // than the ASR final pass. Do not change global or LLM request dispatchers.
+      const options = { ...init, signal: controller.signal, dispatcher: this.asrStreamDispatcher };
+      return await fetch(url, options);
     } finally {
       clearTimeout(timeout);
     }

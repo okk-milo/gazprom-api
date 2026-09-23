@@ -1,4 +1,6 @@
 import { AppConfig } from '../config/app-config';
+import { Agent } from 'undici';
+import { createServer } from 'node:http';
 import { ProcessingClients, type TranscriptionUpdate } from './processing-clients';
 
 const progress = {
@@ -37,6 +39,34 @@ describe('progressive ASR client', () => {
       updates.push(update);
     expect(updates.map((update) => update.sequence)).toEqual([0, 1]);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+  it('reads real HTTP keep-alives and completion with a slow consumer and releases the connection', async () => {
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'application/x-ndjson', Connection: 'close' });
+      response.write(JSON.stringify(progress) + '\n');
+      const heartbeat = setInterval(() => response.write('\n'), 10);
+      const completion = setTimeout(() => response.end(JSON.stringify(complete) + '\n'), 80);
+      response.on('close', () => {
+        clearInterval(heartbeat);
+        clearTimeout(completion);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Missing test server address');
+    process.env.ASR_INTERNAL_URL = `http://127.0.0.1:${address.port}/internal/v1/transcriptions`;
+    const clients = new ProcessingClients(new AppConfig());
+    try {
+      const iterator = clients.streamTranscript('https://storage.test/file.wav');
+      expect((await iterator.next()).value).toMatchObject({ type: 'progress', sequence: 0 });
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      expect((await iterator.next()).value).toMatchObject({ type: 'complete', sequence: 1 });
+      expect((await iterator.next()).done).toBe(true);
+    } finally {
+      await clients.onModuleDestroy();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
   it('retries a stateless LLM connection failure and bounds repeated failures', async () => {
     const deadline = jest.spyOn(AbortSignal, 'timeout');
@@ -107,8 +137,25 @@ describe('progressive ASR client', () => {
           profile: 'fast',
           step_seconds: 10,
         }),
+        dispatcher: expect.any(Agent),
       }),
     );
+  });
+  it('ignores transport keep-alives without publishing extra progress or shifting sequence', async () => {
+    jest.spyOn(global, 'fetch').mockResolvedValue(
+      new Response('\n' + JSON.stringify(progress) + '\n\n\n' + JSON.stringify(complete) + '\n', {
+        headers: { 'Content-Type': 'application/x-ndjson' },
+      }),
+    );
+    const clients = new ProcessingClients(new AppConfig());
+    const updates: TranscriptionUpdate[] = [];
+    try {
+      for await (const update of clients.streamTranscript('https://storage.test/file.wav'))
+        updates.push(update);
+      expect(updates.map((update) => update.sequence)).toEqual([0, 1]);
+    } finally {
+      await clients.onModuleDestroy();
+    }
   });
   it('accepts overlapping words and the one-second boundary tail in the next interval', async () => {
     const updates = await run([
